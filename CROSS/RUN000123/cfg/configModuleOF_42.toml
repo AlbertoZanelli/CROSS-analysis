@@ -1,0 +1,117 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000123/"
+triggerdir = "/data/users/ploaiza/Octopus/Octopus_work/RUN000123/Trigger/"
+processeddir = "/mnt/disk1/data/users/azanelli/octopus_work/CROSS/RUN000123/OFData/"
+
+[runConfig]
+filenamePrefix = ["20260127T222245"]
+runNumber = ["000123"]
+
+[settings]
+rawType = "Cupid"
+runType = "reconstruct"
+draw = false
+verbosity = 5
+overwrite = true
+usemergedtriggers = true
+useflaggedtriggers = false
+
+[channels.light]
+list = [42]
+waveformtype = "continuous"
+
+[module.module.light]
+windowlength = [1.0]
+pretrigger = [0.5]
+Draw = false
+
+[module.timestamp]
+Draw = false
+
+[module.badinterval]
+TxtBadInterval = "/data/users/rserino/CROSS/BadInterval.txt"
+Draw = false
+
+[module.baseline.light]
+Draw = false
+
+[module.baselineslope.light]
+Draw = false
+
+[module.maxminusbaseline.light]
+Draw = false
+Window = [[0.005, 0.002]]
+
+[module.triggerdelay.light]
+Draw = false
+
+[module.risetime.light]
+StartPercentage = [10.0]
+StopPercentage = [90.0]
+Interpolation = true
+Draw = false
+
+[module.decaytime.light]
+StartPercentage = [90.0]
+StopPercentage = [30.0]
+Interpolation = true
+Draw = false
+
+[module.flagpropagator.light.muon]
+FlagPropagatorPath = "/data/users/ploaiza/Octopus/Octopus_work/RUN000123/Trigger//Trigger_20260127T222245_000123_65552.root"
+Type = "muon"
+Draw = false
+
+[module.flagpropagator.light.led]
+FlagPropagatorPath = "/data/users/ploaiza/Octopus/Octopus_work/RUN000123/Trigger//Trigger_20260127T222245_000123_2.root"
+Draw = false
+
+[module.numberoftriggers.light]
+Draw = false
+
+[module.triggerdelaycorrection.light.ap]
+OutputWaveform = "triggerdelaycorrectedAP"
+Draw = false
+
+[module.baselinesubtraction.light.ap]
+InputWaveform = "triggerdelaycorrectedAP"
+OutputWaveform = "baselinesubtracted"
+Draw = false
+
+[module.fouriertransform.light.noise]
+InputWaveform = "baselinesubtracted"
+OutputWaveform = "fft"
+Windowing = "FlatTop"
+Draw = false
+
+[module.optimumfilter.light.all]
+InputWaveform = "fft"
+OutputWaveform = "OFFiltered"
+LoadAP = "/data/users/ploaiza/Octopus/Octopus_work/RUN000096/AP/Processed_20251215T103142_000096_42.root"
+LoadANPS = "/data/users/ploaiza/Octopus/Octopus_work/RUN000096/ANPS/Processed_20251215T103142_000096_42.root"
+AP = "averagepulse_ap_medianAP"
+ANPS = "averagepowerspectrum_anps_medianpower"
+SkipMinimization = true
+Windowing = "FlatTop"
+Draw = false
+DrawOption = "Chi2"
+
+[module.inversefouriertransform.light.corr]
+InputWaveform = "OFFiltered"
+OutputWaveform = "inversefft"
+Draw = false
+
+[module.correlation.light.corr]
+InputWaveform = "inversefft"
+AP = "FilteredAP"
+APModuleName = "optimumfilter_all"
+HalfWindow = 0.2
+Draw = false
+
+[module.chi2.light.chi2]
+InputWaveform = "fft"
+AP = "AP_ReIm"
+APModuleName = "optimumfilter_all"
+InputAmplitudeModule = "optimumfilter_all"
+Domain = "frequency"
+Draw = false

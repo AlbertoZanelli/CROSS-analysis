@@ -1,0 +1,106 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000092/"
+triggerdir = "/data/users/ploaiza/Octopus/Octopus_work/RUN000092/Trigger/"
+processeddir = "/data/users/ploaiza/Octopus/Octopus_work/RUN000092/AP/"
+
+[runConfig]
+filenamePrefix = ["20251211T191513"]
+runNumber = ["000092"]
+
+[settings]
+rawType = "Cupid"
+runType = "reconstruct"
+draw = false
+verbosity = 5
+overwrite = true
+usemergedtriggers = false
+useflaggedtriggers = false
+
+[channels.heat]
+list = [60]
+waveformtype = "continuous"
+
+[module.module.heat]
+windowlength = [1.0]
+pretrigger = [0.5]
+Draw = false
+
+[module.timestamp]
+Draw = false
+
+[module.badinterval]
+TxtBadInterval = "/data/users/ploaiza/Octopus/Octopus_work/BadInterval.txt"
+Draw = false
+
+[module.numberoftriggers.heat]
+Draw = false
+
+[module.baseline.heat]
+Draw = false
+
+[module.baselineslope.heat]
+Draw = false
+
+[module.maxminusbaseline.heat]
+Draw = false
+
+[module.triggerdelay.heat]
+Draw = false
+
+[module.risetime.heat]
+StartPercentage = [10.0]
+StopPercentage = [90.0]
+Interpolation = true
+Draw = false
+
+[module.decaytime.heat]
+StartPercentage = [90.0]
+StopPercentage = [30.0]
+Interpolation = true
+Draw = false
+
+[module.cuts_ap.heat.signal]
+Select = [["module", "module", "issignal", true], ["module", "numberoftriggers", "numberoftriggers", 1]]
+#SelectAbove = [["module", "risetime", "risetime", [0.01]]]
+SelectInside = [["module", "risetime", "risetime", [0.006], [0.01]],
+      ["module", "maxminusbaseline", "amplitude", [0.075], [0.08]]]
+InputMaxminusbaselineModule = "maxminusbaseline"
+Type = "heat"
+CutMode = "manual"
+Draw = false
+
+[module.cuts.heat.signal_slope]
+Select = [["module", "cuts_ap_signal", "pass", true]]
+CutVariable = ["baselineslope", "slope"]
+Draw = false
+
+[module.crosscorr.heat]
+Select = [["module", "cuts_signal_slope", "pass", true]]
+CorrFraction = 0.35
+CorrCut = 0.88
+Draw = false
+
+[module.triggerdelaycorrection.heat.ap]
+Select = [["module", "cuts_signal_slope", "pass", true]]
+SelectAbove = [["module", "crosscorr", "avgcorr", [0.85]]]
+OutputWaveform = "triggerdelaycorrectedAP"
+Draw = false
+
+[module.baselinesubtraction.heat.ap]
+InputWaveform = "triggerdelaycorrectedAP"
+OutputWaveform = "baselinesubtracted"
+Select = [["module", "cuts_signal_slope", "pass", true]]
+RunOnlyOnGoodEvents = true
+Draw = false
+
+[module.averagepulse.heat.ap]
+InputWaveform = "baselinesubtracted"
+SelectAbove = [["module", "crosscorr", "avgcorr", [0.997]]]
+Normalize = true
+NormalizeAverage = true
+Select = [["module", "cuts_signal_slope", "pass", true]]
+PulseMin = [-0.005]
+PulseMax = [1.1]
+RunOnlyOnGoodEvents = true
+Windowing = "FlatTop"
+Draw = false

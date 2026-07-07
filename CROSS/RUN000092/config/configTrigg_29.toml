@@ -1,0 +1,29 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000092/"
+triggerdir = "/data/users/ploaiza/Octopus/Octopus_work/RUN000092/Trigger/"
+
+[runConfig]
+filenamePrefix = ["20251211T191513"]
+runNumber = ["000092"]
+
+[settings]
+rawType = "Cupid"
+runType = "trigger"
+draw = false
+noiseTriggerPeriod = 5
+overwrite = true
+verbosity = 5
+applyFilter = false
+
+[channels.heat]
+list = [29]
+waveformtype = "continuous"
+
+[trigger.linearinterpolation.heat]
+NRMSList = [5.0]
+NAboveList = [5]
+DeadTimeList = [0.02]
+ReadFromTxt = "/data/users/ploaiza/Octopus/Octopus_work/RUN000092/TriggerScan/"
+BufferLengthList = [0.1]
+NoisePeriodList = [100.123456]
+Draw = false

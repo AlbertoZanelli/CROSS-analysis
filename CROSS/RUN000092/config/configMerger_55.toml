@@ -1,0 +1,29 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000092/"
+triggerdir = "/data/users/ploaiza/Octopus/Octopus_work/RUN000092/Trigger/"
+
+[runConfig]
+filenamePrefix = ["20251211T191513"]
+runNumber = ["000092"]
+
+[settings]
+rawType = "Cupid"
+verbosity = 5
+draw = false
+overwrite = true
+timewindow = 0.0005
+# [channels.led] list=[]  # disabled
+
+[channels.heater]
+list = [1]
+waveformtype = "continuous"
+IsPulser = true
+PulserLabel = "heater"
+
+[channels.ch]
+list = [55]
+waveformtype = "continuous"
+
+[propagate]
+Pulserheater = true
+PulserLED = false

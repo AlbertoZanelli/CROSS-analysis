@@ -1,0 +1,12 @@
+NAbove=4 Channel=37 Threshold=8.5
+NAbove=4 Channel=38 Threshold=5.0
+NAbove=4 Channel=39 Threshold=7.0
+NAbove=4 Channel=40 Threshold=6.566
+NAbove=4 Channel=41 Threshold=5.949
+NAbove=4 Channel=73 Threshold=8.0
+NAbove=4 Channel=42 Threshold=6.0
+NAbove=4 Channel=74 Threshold=6.0
+NAbove=4 Channel=76 Threshold=4.920
+NAbove=4 Channel=75 Threshold=7.0
+NAbove=4 Channel=77 Threshold=7.0
+NAbove=4 Channel=78 Threshold=9.0

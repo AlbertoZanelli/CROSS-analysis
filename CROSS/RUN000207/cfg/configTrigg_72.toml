@@ -1,0 +1,29 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000207/"
+triggerdir = "/data/users/azanelli/octopus_work/CROSS/RUN000207/Trigger/"
+
+[runConfig]
+filenamePrefix = ["20260410T164535"]
+runNumber = ["000207"]
+
+[settings]
+rawType = "Cupid"
+runType = "trigger"
+draw = false
+noiseTriggerPeriod = 5
+overwrite = true
+verbosity = 5
+applyFilter = false
+
+[channels.heat]
+list = [72]
+waveformtype = "continuous"
+
+[trigger.linearinterpolation.heat]
+NRMSList = [3.2]
+NAboveList = [5]
+DeadTimeList = [0.06]
+ReadFromTxt = "/data/users/azanelli/Octopus/detectormaps/ThresholdsCROSS.txt"
+BufferLengthList = [0.05]
+NoisePeriodList = [10.0123456]
+Draw = false

@@ -1,0 +1,106 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000096/"
+triggerdir = "/data/users/ploaiza/Octopus/Octopus_work/RUN000096/Trigger/"
+processeddir = "/mnt/disk1/data/users/ploaiza/Octopus/Octopus_work/RUN000096/AP/"
+
+[runConfig]
+filenamePrefix = ["20251215T103142"]
+runNumber = ["000096"]
+
+[settings]
+rawType = "Cupid"
+runType = "reconstruct"
+draw = false
+verbosity = 5
+overwrite = true
+usemergedtriggers = false
+useflaggedtriggers = false
+
+[channels.light]
+list = [74]
+waveformtype = "continuous"
+
+[module.module.light]
+windowlength = [1.0]
+pretrigger = [0.5]
+Draw = false
+
+[module.timestamp]
+Draw = false
+
+[module.badinterval]
+TxtBadInterval = "/data/users/rserino/CROSS/BadInterval.txt"
+Draw = false
+
+[module.numberoftriggers.light]
+Draw = false
+
+[module.baseline.light]
+Draw = false
+
+[module.baselineslope.light]
+Draw = false
+
+[module.maxminusbaseline.light]
+Draw = false
+
+[module.triggerdelay.light]
+Draw = false
+
+[module.risetime.light]
+StartPercentage = [10.0]
+StopPercentage = [90.0]
+Interpolation = true
+Draw = false
+
+[module.decaytime.light]
+StartPercentage = [90.0]
+StopPercentage = [30.0]
+Interpolation = true
+Draw = false
+
+[module.cuts_ap.light.signal]
+Select = [["module", "module", "issignal", true], ["module", "numberoftriggers", "numberoftriggers", 1], ["module", "badinterval", "badinterval", false]]
+SelectInside = [["module", "risetime", "risetime", [0.0018], [0.0021]],
+            ["module", "maxminusbaseline", "amplitude", [0.01], [0.06]]]
+InputMaxminusbaselineModule = "maxminusbaseline"
+Type = "light"
+CutMode = "manual"
+Draw = false
+
+[module.cuts.light.signal_slope]
+Select = [["module", "cuts_ap_signal", "pass", true]]
+CutVariable = ["baselineslope", "slope"]
+Draw = false
+
+[module.crosscorr.light]
+Select = [["module", "cuts_signal_slope", "pass", true]]
+CorrFraction = 0.01
+CorrCut = 0.00
+Draw = false
+
+[module.triggerdelaycorrection.light.ap]
+#Select = [["module", "crosscorr", "pass", true]]
+Select = [["module", "cuts_signal_slope", "pass", true]]
+#SelectAbove = [["module", "crosscorr", "avgcorr", [0.01]]]
+OutputWaveform = "triggerdelaycorrectedAP"
+Draw = false
+
+[module.baselinesubtraction.light.ap]
+InputWaveform = "triggerdelaycorrectedAP"
+OutputWaveform = "baselinesubtracted"
+#Select = [["module", "crosscorr", "pass", true]]
+RunOnlyOnGoodEvents = true
+Draw = false
+
+[module.averagepulse.light.ap]
+InputWaveform = "baselinesubtracted"
+#SelectAbove = [["module", "crosscorr", "avgcorr", [0.01]]]
+Normalize = true
+NormalizeAverage = true
+Select = [["module", "crosscorr", "pass", true]]
+PulseMin = [-0.005]
+PulseMax = [1.1]
+RunOnlyOnGoodEvents = true
+Windowing = "FlatTop"
+Draw = false

@@ -1,0 +1,115 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000096/"
+triggerdir = "/data/users/ploaiza/Octopus/Octopus_work/RUN000096/Trigger/"
+processeddir = "/mnt/disk1/data/users/ploaiza/Octopus/Octopus_work/RUN000096/ANPS/"
+
+[runConfig]
+filenamePrefix = ["20251215T103142"]
+runNumber = ["000096"]
+
+[settings]
+rawType = "Cupid"
+runType = "reconstruct"
+draw = false
+verbosity = 5
+overwrite = true
+usemergedtriggers = false
+useflaggedtriggers = false
+
+[channels.light]
+list = [39]
+waveformtype = "continuous"
+
+[module.module.light]
+windowlength = [1.0]
+pretrigger = [0.5]
+Draw = false
+
+[module.timestamp]
+Draw = false
+
+[module.badinterval]
+TxtBadInterval = "/data/users/ploaiza/Octopus/Octopus_work/BadInterval.txt"
+Draw = false
+
+[module.numberoftriggers.light]
+Draw = false
+
+[module.baseline.light]
+Draw = false
+
+[module.baselineslope.light]
+Draw = false
+
+[module.maxminusbaseline.light]
+Draw = false
+
+[module.triggerdelay.light]
+Draw = false
+
+[module.risetime.light]
+StartPercentage = [10.0]
+StopPercentage = [90.0]
+Interpolation = true
+Draw = false
+
+[module.decaytime.light]
+StartPercentage = [90.0]
+StopPercentage = [30.0]
+Interpolation = true
+Draw = false
+
+[module.variablecombination.light]
+Operation = ["maxminusbaseline.windowamp - maxminusbaseline.amplitude "]
+NameVar = ["relAmp"]
+Draw = false
+
+[module.cuts.light.noise_relamp]
+Select = [["module", "module", "isnoise", true], ["module", "numberoftriggers", "numberoftriggers", 1], ["module", "badinterval", "badinterval", false]]
+CutVariable = ["variablecombination", "relAmp"]
+Draw = false
+
+[module.cuts.light.noise_slope]
+Select = [["module", "cuts_noise_relamp", "pass", true]]
+CutVariable = ["baselineslope", "slope"]
+Draw = false
+
+[module.cuts.light.noise_rms]
+Select = [["module", "cuts_noise_slope", "pass", true]]
+CutVariable = ["baseline", "RMS"]
+Threshold = 2.2
+Draw = false
+
+[module.cuts.light.noise_amplitude]
+Select = [["module", "cuts_noise_rms", "pass", true]]
+CutVariable = ["maxminusbaseline", "amplitude"]
+Threshold = 1.5
+Draw = false
+
+[module.triggerdelaycorrection.light.noise]
+OutputWaveform = "triggerdelaycorrected"
+Select = [["module", "cuts_noise_amplitude", "pass", true]]
+
+[module.baselinesubtraction.light.noise]
+InputWaveform = "triggerdelaycorrected"
+OutputWaveform = "baselinesubtracted"
+Select = [["module", "cuts_noise_amplitude", "pass", true]]
+RunOnlyOnGoodEvents = true
+Draw = false
+
+[module.fouriertransform.light.noise]
+InputWaveform = "baselinesubtracted"
+OutputWaveform = "fft"
+Windowing = "FlatTop"
+Select = [["module", "cuts_noise_amplitude", "pass", true]]
+RunOnlyOnGoodEvents = true
+Draw = false
+
+[module.averagepowerspectrum.light.anps]
+InputWaveform = "fft"
+PowerPlotMaxValue = [0.0001]
+Select = [["module", "cuts_noise_amplitude", "pass", true]]
+RunOnlyOnGoodEvents = true
+Gain = 910
+Normalize = false
+Draw = false

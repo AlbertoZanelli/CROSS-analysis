@@ -1,0 +1,26 @@
+#### Sentivities values (nV/keV) for all the channel in order to have a rough calibration
+
+Channel	25	:	58.4
+Channel	26	:	51.27
+Channel	27	:	58.8
+Channel	28	:	77.7
+Channel	29	:	72.7
+Channel	30	:	14.5
+Channel	55	:	60.9
+Channel	56	:	63.0
+Channel	57	:	69.8
+Channel	58	:	38.7
+Channel	59	:	67.2
+Channel	60	:	32.6
+Channel	49	:	44.6
+Channel	50	:	69.3
+Channel	51	:	61.3
+Channel	52	:	13.1
+Channel	53	:	74.3
+Channel	54	:	62.6
+Channel	67	:	100
+Channel	68	:	1340
+Channel	69	:	1200
+Channel	70	:	230
+Channel	71	:	900
+Channel	72	:	930

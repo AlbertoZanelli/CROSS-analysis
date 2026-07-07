@@ -1,0 +1,12 @@
+NAbove=5 Channel=30 Threshold=3.577        #from triggerScan: 3.577
+NAbove=5 Channel=56 Threshold=5.0            #3.381
+NAbove=5 Channel=26 Threshold=5.0             #3.185
+NAbove=5 Channel=28 Threshold=5.0             #3.087
+NAbove=5 Channel=25 Threshold=5.0             #3.136
+NAbove=5 Channel=60 Threshold=5.0             #2.744
+NAbove=5 Channel=57 Threshold=5.0             #6.566
+NAbove=5 Channel=59 Threshold=5.0             #3.479
+NAbove=5 Channel=58 Threshold=5.0             #6.419
+NAbove=5 Channel=29 Threshold=5.0             #3.038
+NAbove=5 Channel=27 Threshold=5.0             #3.087
+NAbove=5 Channel=55 Threshold=5.0             #3.626

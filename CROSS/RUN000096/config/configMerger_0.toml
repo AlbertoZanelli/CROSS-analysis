@@ -1,0 +1,30 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000096/"
+triggerdir = "/data/users/ploaiza/Octopus/Octopus_work/RUN000096/Trigger/"
+
+[runConfig]
+filenamePrefix = ["20251215T103142"]
+runNumber = ["000096"]
+
+[settings]
+rawType = "Cupid"
+verbosity = 5
+draw = false
+overwrite = true
+timewindow = 0.0015
+
+[channels.lmo]
+list = [25, 26, 27, 28, 29, 30, 55, 56, 57, 58, 59, 60]
+waveformtype = "continuous"
+PropagateHeater = false
+PropagateLED = false
+
+[channels.ld]
+list = [37, 38, 39, 40, 41, 42, 73, 74, 75, 76, 77, 78]
+waveformtype = "continuous"
+Skip = true
+
+[detectormap]
+PropagationScheme = [["lmo", "ld"]]
+DetectorMap = "/data/users/ploaiza/Octopus/Octopus_work/detectormaps/Cross.toml"
+NumberOfFloors = 7

@@ -1,0 +1,117 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000207/"
+triggerdir = "/data/users/azanelli/octopus_work/CROSS/RUN000207/Trigger/"
+processeddir = "/mnt/disk1/data/users/azanelli/octopus_work/CROSS/RUN000207/OFData/"
+
+[runConfig]
+filenamePrefix = ["20260410T164535"]
+runNumber = ["000207"]
+
+[settings]
+rawType = "Cupid"
+runType = "reconstruct"
+draw = false
+verbosity = 5
+overwrite = true
+usemergedtriggers = false
+useflaggedtriggers = false
+
+[channels.light]
+list = [40]
+waveformtype = "continuous"
+
+[module.module.light]
+windowlength = [0.4]
+pretrigger = [0.2]
+Draw = false
+
+[module.timestamp]
+Draw = false
+
+[module.badinterval]
+TxtBadInterval = "/data/users/rserino/CROSS/BadInterval.txt"
+Draw = false
+
+[module.baseline.light]
+Draw = false
+
+[module.baselineslope.light]
+Draw = false
+
+[module.maxminusbaseline.light]
+Draw = false
+Window = [[0.005, 0.002]]
+
+[module.triggerdelay.light]
+Draw = false
+
+[module.risetime.light]
+StartPercentage = [10.0]
+StopPercentage = [90.0]
+Interpolation = true
+Draw = false
+
+[module.decaytime.light]
+StartPercentage = [90.0]
+StopPercentage = [30.0]
+Interpolation = true
+Draw = false
+
+[module.flagpropagator.light.muon]
+FlagPropagatorPath = "/data/users/azanelli/octopus_work/CROSS/RUN000207/Trigger//Trigger_20260410T164535_000207_65552.root"
+Type = "muon"
+Draw = false
+
+[module.flagpropagator.light.led]
+FlagPropagatorPath = "/data/users/azanelli/octopus_work/CROSS/RUN000207/Trigger//Trigger_20260410T164535_000207_2.root"
+Draw = false
+
+[module.numberoftriggers.light]
+Draw = false
+
+[module.triggerdelaycorrection.light.ap]
+OutputWaveform = "triggerdelaycorrectedAP"
+Draw = false
+
+[module.baselinesubtraction.light.ap]
+InputWaveform = "triggerdelaycorrectedAP"
+OutputWaveform = "baselinesubtracted"
+Draw = false
+
+[module.fouriertransform.light.noise]
+InputWaveform = "baselinesubtracted"
+OutputWaveform = "fft"
+Windowing = "FlatTop"
+Draw = false
+
+[module.optimumfilter.light.all]
+InputWaveform = "fft"
+OutputWaveform = "OFFiltered"
+LoadAP = "/data/users/rserino/CROSS/RUN000204/AP/Processed_20260405T115934_000204_40.root"
+LoadANPS = "/data/users/rserino/CROSS/RUN000206/ANPS/Processed_20260407T011059_000206_40.root"
+AP = "averagepulse_ap_medianAP"
+ANPS = "averagepowerspectrum_anps_medianpower"
+SkipMinimization = true
+Windowing = "FlatTop"
+Draw = false
+DrawOption = "Chi2"
+
+[module.inversefouriertransform.light.corr]
+InputWaveform = "OFFiltered"
+OutputWaveform = "inversefft"
+Draw = false
+
+[module.correlation.light.corr]
+InputWaveform = "inversefft"
+AP = "FilteredAP"
+APModuleName = "optimumfilter_all"
+HalfWindow = 0.2
+Draw = false
+
+[module.chi2.light.chi2]
+InputWaveform = "fft"
+AP = "AP_ReIm"
+APModuleName = "optimumfilter_all"
+InputAmplitudeModule = "optimumfilter_all"
+Domain = "frequency"
+Draw = false

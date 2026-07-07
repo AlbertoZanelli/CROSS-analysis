@@ -1,0 +1,45 @@
+############### TOML file for Reconstruct.cpp ####################################
+# Please keep this as a template in the Octopus directory and copy it in your 
+#suitable work folder. 
+###############################################################################
+
+######################### NOTES ###############################################
+
+###############################################################################
+###############################################################################
+
+[directories]
+rawdir       =  "/data2/LSC/DATA/RUN14/000143/"
+triggerdir   = "/data/users/azanelli/octopus_work/RUN143/Trigger"
+
+[runConfig]
+    filenamePrefix = ["20260302T091555"]
+    runNumber      =  ["000143"]
+
+[channels.heat]
+    list = [25]
+    #first = 11
+    #last  = 12
+    waveformtype = "continuous"
+
+#[channels.light]
+#    list = [9]
+#    #first = 11
+#    #last  = 12
+#    waveformtype = "continuous"
+
+
+
+[settings]
+    rawType     = "Cupid"
+    verbosity   = 5 # 1-->Error 2-->Warning ... 5-->Debug
+    startTime   = 0.0 # in seconds
+    stopTime    = 1000.0 # in seconds
+    stride      = 2 # rebin (to make the plot faster for long periods)
+    plotTrigger = true #bool
+    #plotDeriv   = false #bool
+    #drawSignal  = true
+    #drawNoise   = true
+    #drawPulser  = true
+    #drawMuon    = false
+    #bufferLength = 1.0 

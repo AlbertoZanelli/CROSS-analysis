@@ -1,0 +1,124 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000126/"
+triggerdir = "/data/users/ploaiza/Octopus/Octopus_work/RUN000126/Trigger/"
+processeddir = "/mnt/disk1/data/users/azanelli/octopus_work/CROSS/RUN000126/OFData/"
+
+[runConfig]
+filenamePrefix = ["20260211T214858"]
+runNumber = ["000126"]
+
+[settings]
+rawType = "Cupid"
+runType = "reconstruct"
+draw = false
+verbosity = 5
+overwrite = true
+usemergedtriggers = true
+useflaggedtriggers = false
+
+[channels.light]
+list = [30]
+waveformtype = "continuous"
+
+[module.module.light]
+windowlength = [1.0]
+pretrigger = [0.5]
+Draw = false
+
+[module.timestamp]
+Draw = false
+
+[module.badinterval]
+TxtBadInterval = "/data/users/rserino/CROSS/BadInterval.txt"
+Draw = false
+
+[module.baseline.light]
+Draw = false
+
+[module.baselineslope.light]
+Draw = false
+
+[module.maxminusbaseline.light]
+Draw = false
+
+[module.triggerdelay.light]
+Draw = false
+
+[module.risetime.light]
+StartPercentage = [10.0]
+StopPercentage = [90.0]
+Interpolation = true
+Draw = false
+
+[module.decaytime.light]
+StartPercentage = [90.0]
+StopPercentage = [30.0]
+Interpolation = true
+Draw = false
+
+[module.flagpropagator.light.heater]
+FlagPropagatorPath = "/data/users/ploaiza/Octopus/Octopus_work/RUN000126/Trigger//Trigger_20260211T214858_000126_1.root"
+Draw = false
+
+[module.numberoftriggers.light]
+Draw = false
+
+[module.triggerdelaycorrection.light.ap]
+OutputWaveform = "triggerdelaycorrectedAP"
+Draw = false
+
+[module.baselinesubtraction.light.ap]
+InputWaveform = "triggerdelaycorrectedAP"
+OutputWaveform = "baselinesubtracted"
+Draw = false
+
+[module.fouriertransform.light.noise]
+InputWaveform = "baselinesubtracted"
+OutputWaveform = "fft"
+Windowing = "FlatTop"
+Draw = false
+
+[module.optimumfilter.light.all]
+InputWaveform = "fft"
+OutputWaveform = "OFFiltered"
+LoadAP = "/data/users/ploaiza/Octopus/Octopus_work/RUN000092/AP/Processed_20251211T191513_000092_30.root"
+LoadANPS = "/data/users/ploaiza/Octopus/Octopus_work/RUN000089/ANPS/Processed_20251210T182259_000089_30.root"
+AP = "averagepulse_ap_medianAP"
+ANPS = "averagepowerspectrum_anps_medianpower"
+Windowing = "FlatTop"
+Draw = false
+DrawOption = "Chi2"
+
+[module.inversefouriertransform.light.corr]
+InputWaveform = "OFFiltered"
+OutputWaveform = "inversefft"
+Draw = false
+
+[module.correlation.light.corr]
+InputWaveform = "inversefft"
+AP = "FilteredAP"
+APModuleName = "optimumfilter_all"
+HalfWindow = 0.2
+Draw = false
+
+[module.chi2.light.chi2]
+InputWaveform = "fft"
+AP = "AP_ReIm"
+APModuleName = "optimumfilter_all"
+InputAmplitudeModule = "optimumfilter_all"
+Domain = "frequency"
+Draw = false
+
+[module.calibration.light.rough]
+LoadCalTxt = "/mnt/disk1/data/users/azanelli/octopus_work/CROSS/SensitivitiesCROSS.txt"
+InputCalibrationModule = "optimumfilter_all"
+Draw = false
+
+[module.stabilization.light.all]
+Select = [["module", "flagpropagator_heater", "IsHeater", true]]
+InputAmplitude = "optimumfilter_all"
+SegmentatedFit = true
+StabValue = 10000.0
+RemoveOutliers = 3.5
+Mode = "manual"
+Draw = false

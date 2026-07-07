@@ -1,0 +1,32 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000097/"
+triggerdir = "/data/users/azanelli/octopus_work/CROSS/RUN000097/Trigger/"
+triggerscandir = "/mnt/disk1/data/users/azanelli/octopus_work/CROSS/RUN000097/TriggerScan/"
+
+[runConfig]
+filenamePrefix = ["20251218T003930"]
+runNumber = ["000097"]
+
+[settings]
+rawType = "Cupid"
+runType = "trigger"
+draw = false
+noiseTriggerPeriod = 5
+overwrite = true
+verbosity = 5
+applyFilter = false
+
+[channels.heat]
+list = [25]
+waveformtype = "continuous"
+
+[trigger.linearinterpolation.heat]
+StartThresh = 2.0
+EndThresh = 8.0
+Step = 0.05
+TimeScan = 500.0
+DeadTimeList = [0.12]
+BufferLengthList = [0.1]
+NAboveInit = 4
+NAboveFin = 8
+WriteTxt = true

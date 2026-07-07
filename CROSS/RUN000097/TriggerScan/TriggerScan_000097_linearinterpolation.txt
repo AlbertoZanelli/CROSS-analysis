@@ -1,0 +1,1 @@
+NAbove=4 Channel=25 Threshold=3.332

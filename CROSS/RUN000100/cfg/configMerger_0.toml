@@ -1,0 +1,30 @@
+[directories]
+rawdir = "/data2/LSC/DATA/RUN14/000100/"
+triggerdir = "/data/users/azanelli/octopus_work/CROSS/RUN000100/Trigger/"
+
+[runConfig]
+filenamePrefix = ["20251223T104130"]
+runNumber = ["000100"]
+
+[settings]
+rawType = "Cupid"
+verbosity = 5
+draw = false
+overwrite = true
+timewindow = 0.0015
+
+[channels.lmo]
+list = [25, 26, 27, 28, 29, 30, 55, 56, 57, 58, 59, 60]
+waveformtype = "continuous"
+PropagateHeater = false
+PropagateLED = false
+
+[channels.ld]
+list = [43, 31, 32, 33, 34, 35, 36, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 37, 38, 39, 40, 41, 42, 79, 80, 81, 82, 83, 84, 91, 92, 93, 94, 95, 96]
+waveformtype = "continuous"
+Skip = true
+
+[detectormap]
+PropagationScheme = [["lmo", "ld"]]
+DetectorMap = "/data/users/azanelli/Octopus/detectormaps/Cross.toml"
+NumberOfFloors = 7

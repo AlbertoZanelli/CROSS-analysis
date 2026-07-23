@@ -147,10 +147,10 @@ GLOBAL_KEEPALIVE = []
 ANALYSIS_MODE = "mergedrun"     # "mergedrun", "run" or "calibrationrun"
 
 # mergedrun mode: folder containing the input .root files.
-BASE_DIR = "/data/users/azanelli/octopus_work/CROSS/MergedRuns/CorrectedAmp"
+BASE_DIR = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS/MergedRuns/CorrectedAmp"  # e.g. .../MergedRuns/CorrectedAmps
 
 # run mode: CROSS folder holding the RUNxxxxxx sub-folders, and the run number.
-CROSS_DIR  = "/data/users/azanelli/octopus_work/CROSS"
+CROSS_DIR  = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS"
 RUN_NUMBER = 96                 # e.g. 96 -> folder RUN000096, sub-folder Coincidence
 
 # --- Channels to analyse (number after "ch" in the file name) ---------------
@@ -162,7 +162,7 @@ CHANNELS_TO_PROCESS = [25, 26, 27, 28, 29, 30, 55, 56, 57, 58, 59, 60]
 
 # --- Output / GUI switches --------------------------------------------------
 SAVE_SUMMARY_JPEG   = True    # per-channel debug JPEGs (global, partitions, before/after)
-SAVE_CORR_JPEG      = False   # correlation-analysis JPEGs
+SAVE_CORR_JPEG      = True    # correlation-analysis JPEGs
 SAVE_PARTITION_JPEG = True    # baseline-partition debug JPEG
 CREATE_ROOT_FILE    = True    # write the stabilized ROOT files
 GUI_MANUAL_CUTS     = False   # interactive manual-cut GUI (active only with a single channel)
@@ -233,14 +233,27 @@ CORR_CUT_PERCENTILE = 0.10    # dynamic cut at this percentile of valid corr
 LY_N_SIGMA        = 4.0   # thallium acceptance half-width in the LY spectrum
 HEAT_CLEAN_NSIGMA = 1.5   # pre-cleaning half-width around the thallium peak
 
+# --- Before/after comparison histograms (per partition) ---------------------
+# Shared before/after axis of the calibrated thallium peak. The window is
+# center +/- BA_WIN_NSIGMA*sigma; the bin count is STATISTICS-AWARE so that
+# low-population partitions do not end up with many empty bins (holes) that
+# spoil the fit: aim for ~BA_TARGET_PER_BIN counts per bin (on the sparser of
+# the before/after samples), never fewer than BA_MIN_BINS bins, and never a
+# finer binning than the peak resolution supports (~sigma/BA_RES_BIN_DIV).
+BA_WIN_NSIGMA     = 6   # half-window of the shared axis, in sigma
+BA_TARGET_PER_BIN = 1.0   # target average counts per bin (statistics cap)
+BA_RES_BIN_DIV    = 4.0   # resolution cap: finest bin width ~ sigma / this
+BA_MIN_BINS       = 15    # never use fewer bins than this
+BA_MAX_BINS       = 200   # never use more bins than this
+
 # --- Baseline partitioning --------------------------------------------------
 # The amplitude-vs-baseline scatter splits into several clusters along the
 # baseline axis. Partitions separate ONLY blocks that are clearly DETACHED in
 # the baseline histogram: a boundary is placed across a gap of consecutive
 # EMPTY bins. Close peaks with counts between them stay in the same partition.
 PART_N_BINS          = 200    # bins of the baseline histogram used for the search
-PART_MIN_GAP_BINS    = 4      # a separation needs at least this many consecutive low bins
-PART_GAP_HEIGHT_FRAC = 0.03   # a bin belongs to a GAP when its height is below this fraction
+PART_MIN_GAP_BINS    = 4     # a separation needs at least this many consecutive low bins
+PART_GAP_HEIGHT_FRAC = 0.05   # a bin belongs to a GAP when its height is below this fraction
                               # of the tallest block: gaps are judged by RELATIVE height, not
                               # raw counts (a few stray counts in a deep valley still separate)
 PART_MIN_BLOCK_FRAC  = 0.15   # blocks below this fraction of the MOST POPULATED block are
@@ -924,6 +937,90 @@ def CreateLineBox(f1, header="LINEAR FIT", header_color=ROOT.kRed,
     return pt
 
 
+# --- Heater-correlation lower bound -----------------------------------------
+HEATER_CORR_MIN   = 0.992   # heater-correlation histogram lower edge (search start)
+HEATER_CORR_BINS  = 70      # bins of that histogram
+HEATER_CORR_NSIGMA = 2.0    # lower bound = heater-peak mean + this many sigma
+
+
+def AnalyzeHeaterCorrThreshold(heater_corrs, ch_id, fallback):
+    """
+    Correlation value 'just above the heater events'.
+
+    This is used as the LOWER bound of the interval over which the dynamic
+    correlation-cut percentile (CORR_CUT_PERCENTILE) is taken, replacing the
+    fixed CORR_VALID_MIN. Heater (pulser) events cluster at very high, stable
+    correlation; the returned value sits just above that cluster.
+
+    Procedure (heater events only, taken RAW: IsHeater==1, corr>HEATER_CORR_MIN):
+      - histogram the heater-event correlations;
+      - locate the RIGHTMOST peak (TSpectrum, else the tallest bin);
+      - Gaussian-fit it and return  mean + HEATER_CORR_NSIGMA*sigma;
+      - if that exceeds 1.0, walk the peak's right tail down to the first bin
+        below 5 % of the peak height and use that correlation instead.
+    Any failure (<=10 heater events, degenerate fit, tail scan failing) returns
+    *fallback* (CORR_VALID_MIN).
+
+    Returns (threshold, h_corr_heater or None, fit or None). The histogram and
+    fit are kept for the debug drawing.
+    """
+    raw = np.asarray(heater_corrs, dtype=np.float64)
+    raw = raw[np.isfinite(raw) & (raw > HEATER_CORR_MIN)]
+    if len(raw) <= 10:
+        print(f">>> Ch {ch_id}: <=10 heater events with corr>{HEATER_CORR_MIN}; "
+              f"heater threshold falls back to CORR_VALID_MIN={fallback:.6f}.")
+        return fallback, None, None
+
+    h = ROOT.TH1F(f"h_corr_heater_{ch_id}",
+                  f"Ch {ch_id}: Heater Correlation; Correlation; Counts",
+                  HEATER_CORR_BINS, HEATER_CORR_MIN, 1.00005)
+    h.SetDirectory(0)
+    h.FillN(len(raw), raw.astype(np.double), np.ones(len(raw), np.double))
+
+    spec = ROOT.TSpectrum(5)
+    nP   = spec.Search(h, 2, "goff", 0.2)
+    if nP > 0:
+        xp        = spec.GetPositionX()
+        rightmost = max(xp[i] for i in range(nP))
+    else:
+        rightmost = h.GetXaxis().GetBinCenter(h.GetMaximumBin())
+    print(f"  -> Ch {ch_id}: {nP} peak(s) in heater correlation; rightmost at {rightmost:.6f}.")
+
+    fit_window = max(0.0004, h.GetRMS() * 1.5)
+    fit = ROOT.TF1(f"fit_corr_heater_{ch_id}", "gaus",
+                   rightmost - fit_window, rightmost + fit_window)
+    fit.SetParameters(h.GetBinContent(h.GetXaxis().FindBin(rightmost)), rightmost, 0.0001)
+    # Log-likelihood fit ("L"): the low-amplitude heater pedestal inflates the
+    # histogram RMS (hence the fit window); a plain chi^2 fit then drifts off the
+    # narrow rightmost peak onto the pedestal. The likelihood fit (as used for the
+    # LY gaussians) locks onto the tall, narrow heater peak instead.
+    h.Fit(fit, "Q0 R L")
+
+    mean, sigma = fit.GetParameter(1), fit.GetParameter(2)
+    thr = mean + HEATER_CORR_NSIGMA * sigma
+
+    if thr > 1.0:
+        # Gaussian tail overshoots 1.0: use the first low-count bin of the tail.
+        max_bin    = h.GetMaximumBin()
+        thresh_cnt = h.GetBinContent(max_bin) * 0.05
+        thr = None
+        for b in range(max_bin, h.GetNbinsX() + 1):
+            if h.GetBinContent(b) <= thresh_cnt:
+                thr = h.GetXaxis().GetBinCenter(b)
+                break
+        if thr is None or thr > 1.0:
+            thr = fallback
+            print(f"  [!] Ch {ch_id}: heater cut > 1.0 and tail scan failed; "
+                  f"threshold falls back to {fallback:.6f}.")
+        else:
+            print(f"  [!] Ch {ch_id}: heater Gaussian cut > 1.0; using first "
+                  f"low-count bin at {thr:.6f}.")
+    else:
+        print(f">>> Ch {ch_id}: heater correlation threshold (mean+{HEATER_CORR_NSIGMA:g}sigma) = "
+              f"{thr:.6f} (mean={mean:.6f}, sigma={sigma:.6f}).")
+    return thr, h, fit
+
+
 def padded_view(x_arr, y_arr, x_pad_frac=0.45, y_pad_frac=0.55):
     """
     Return (x0, x1, y0, y1) padded display limits for a scatter, so the cloud
@@ -1146,12 +1243,13 @@ def fit_thallium_peak(energies, center, lo, hi, nb, sig_seed, tag):
     return h, ff
 
 
-def shared_before_after_fits(before_e, after_e, center, tag, sig_hint=None):
+def shared_before_after_fits(before_e, after_e, center, tag, sig_hint=None,
+                             stats_aware=True):
     """
     Fit a BEFORE and an AFTER energy sample of the thallium peak on a SHARED axis
     (equal range + binning) with gaus(0)+pol1(3) Poisson-likelihood fits. The axis
-    is window = center +/- 3.5*sigma_ref with bin width ~ sigma_ref/6. *after_e*
-    may be None.
+    is window = center +/- BA_WIN_NSIGMA*sigma_ref with bin width ~ sigma_ref/
+    BA_RES_BIN_DIV. *after_e* may be None.
 
     *sig_hint*: a RELIABLE peak width (energy). When given (e.g. the partition's
     clean-peak sigma), it sets BOTH the window and the seed, giving a SMALL window
@@ -1159,6 +1257,11 @@ def shared_before_after_fits(before_e, after_e, center, tag, sig_hint=None):
     width estimate inflates the window and lets the background swallow the peak.
     When None (combined spectrum), the window uses the BROADER of the two measured
     peaks and the seed the narrower one.
+
+    *stats_aware*: when True (per-partition), the bin count is additionally capped
+    so sparse partitions keep ~BA_TARGET_PER_BIN counts/bin (no empty-bin holes).
+    When False (combined spectrum, see combined_before_after_fits) only the
+    resolution cap applies, keeping the fine binning the narrow AFTER peak needs.
     Returns (h_before, fit_before, h_after, fit_after) (fit_* may be None).
     """
     if sig_hint is not None and sig_hint > 0:
@@ -1169,15 +1272,41 @@ def shared_before_after_fits(before_e, after_e, center, tag, sig_hint=None):
         valid   = [s for s in (sig_b, sig_a) if s]
         sig_win  = max(valid) if valid else 15.0    # window: the BROADER peak
         sig_seed = min(valid) if valid else sig_win # seed: the narrower (reliable) one
-    W  = 3.5 * sig_win
+    W  = BA_WIN_NSIGMA * sig_win
     lo, hi = center - W, center + W
-    nb = int(np.clip(round((hi - lo) / max(sig_win / 6.0, 1e-9)), 12, 200))
+    # Resolution cap: do not bin finer than the peak width supports.
+    nb = round((hi - lo) / max(sig_win / BA_RES_BIN_DIV, 1e-9))
+    if stats_aware:
+        # Statistics cap: keep ~BA_TARGET_PER_BIN counts/bin on the SPARSER sample
+        # (before/after share one axis), so low-population partitions avoid holes.
+        counts_in_win = [int(np.sum(np.isfinite(x) & (x >= lo) & (x <= hi)))
+                         for x in (before_e, after_e) if x is not None]
+        n_min   = min(counts_in_win) if counts_in_win else 0
+        nb_stat = max(1, round(n_min / BA_TARGET_PER_BIN))
+        nb = min(nb, nb_stat)
+    nb = int(np.clip(nb, BA_MIN_BINS, BA_MAX_BINS))
     h_b = f_b = h_a = f_a = None
     if before_e is not None:
         h_b, f_b = fit_thallium_peak(before_e, center, lo, hi, nb, sig_seed, f"{tag}_before")
     if after_e is not None:
         h_a, f_a = fit_thallium_peak(after_e, center, lo, hi, nb, sig_seed, f"{tag}_after")
     return h_b, f_b, h_a, f_a
+
+
+def combined_before_after_fits(before_e, after_e, center, tag, sig_hint=None):
+    """
+    Before/after fits for the COMBINED thallium peak (all partitions merged).
+
+    Dedicated variant of shared_before_after_fits with the ORIGINAL binning:
+    resolution-only (bin width ~ sigma_ref/BA_RES_BIN_DIV), WITHOUT the
+    statistics cap. The combined AFTER peak is narrow while its window is set by
+    the broad BEFORE spread; the statistics cap would then widen the bins and
+    smear the peak onto a couple of bins. Keeping the fine resolution binning
+    preserves the peak shape.
+    Returns (h_before, fit_before, h_after, fit_after) (fit_* may be None).
+    """
+    return shared_before_after_fits(before_e, after_e, center, tag,
+                                    sig_hint=sig_hint, stats_aware=False)
 
 
 # ===========================================================================
@@ -1826,8 +1955,8 @@ def run_stabilization(
     tree_trig = file.Get("numberoftriggers")
     tree_corr = file.Get("correlation_corr")
     tree_ly   = file.Get("LY")
-    tree_baseline = file.Get("baseline")
     tree_time = file.Get("timestamp")   # heat_timefromstartrun (baseline-vs-time plot)
+    tree_heater = file.Get("flagpropagator_heater")   # IsHeater flag (pulser events)
     # Optimum-filter tree, also used to compute the LY when the 'LY' tree is gone.
     tree_opt  = tree_main if main_tree_name == AMP_TREE_OPTIMUM else file.Get(AMP_TREE_OPTIMUM)
 
@@ -1840,7 +1969,7 @@ def run_stabilization(
     # pointer (not Python None), so it must be filtered with _valid_tree. The
     # LY tree and the optimum-filter tree (LY ratio fallback) are included too.
     candidate_friends = [tree_mod, tree_bad, tree_trig, tree_corr, tree_cal,
-                         tree_baseline, tree_ly, tree_opt, tree_time]
+                         tree_baseline, tree_ly, tree_opt, tree_time, tree_heater]
     already     = {tree_for_stabilization.GetName()}
     friend_list = []
     for t in candidate_friends:
@@ -1871,6 +2000,7 @@ def run_stabilization(
     has_time = time_leaf is not None
     has_heat_badinterval = bool(tree_for_stabilization.GetLeaf("heat_badinterval"))
     has_heat_issignal    = bool(tree_for_stabilization.GetLeaf("heat_issignal"))
+    has_heater_flag      = bool(tree_for_stabilization.GetLeaf("IsHeater"))
     cal_tree_name        = tree_cal.GetName()
     ly_tree_name         = tree_ly.GetName() if _valid_tree(tree_ly) else None
 
@@ -1990,18 +2120,43 @@ def run_stabilization(
     N = len(ha)
 
     # ======================================================================
+    # HEATER-CORRELATION LOWER BOUND
+    # ======================================================================
+    # Lower edge of the interval over which the correlation-cut percentile is
+    # taken. Instead of the fixed CORR_VALID_MIN, use the correlation value just
+    # ABOVE the heater (pulser) events (mean + 5*sigma of their correlation
+    # peak). Heater events are read RAW here (IsHeater==1, corr>HEATER_CORR_MIN,
+    # NO quality filters), independent of the main-event selection. Falls back to
+    # CORR_VALID_MIN when the heater flag is absent or the fit is unreliable.
+    if has_heater_flag:
+        _hd = (ROOT.RDataFrame(tree_for_stabilization)
+               .Filter("IsHeater == 1")
+               .AsNumpy(["heat_correlation", "heat_amplitude"]))
+        heater_corrs = np.asarray(_hd["heat_correlation"], np.float64)
+        heater_amps  = np.asarray(_hd["heat_amplitude"],   np.float64)
+        corr_valid_min_eff, h_corr_heater, fit_corr_heater = AnalyzeHeaterCorrThreshold(
+            heater_corrs, ch_id, CORR_VALID_MIN)
+    else:
+        corr_valid_min_eff, h_corr_heater, fit_corr_heater = CORR_VALID_MIN, None, None
+        heater_corrs = np.empty(0, np.float64)
+        heater_amps  = np.empty(0, np.float64)
+        print(f">>> Ch {ch_id}: no 'IsHeater' flag; correlation interval lower bound "
+              f"= CORR_VALID_MIN = {CORR_VALID_MIN:.6f}.")
+
+    # ======================================================================
     # DYNAMIC CORRELATION CUT  (vectorised)
     # ======================================================================
-    mask_corr_valid = corr > CORR_VALID_MIN
+    mask_corr_valid = corr > corr_valid_min_eff
     corr_above      = corr[mask_corr_valid]
     ha_above        = ha[mask_corr_valid]
     corr_sorted     = np.sort(corr_above)
     n_corr          = len(corr_sorted)
 
-    corr_hist_min    = float(corr_sorted[int(n_corr * 0.01)]) if n_corr > 0 else CORR_VALID_MIN
+    corr_hist_min    = float(corr_sorted[int(n_corr * 0.01)]) if n_corr > 0 else corr_valid_min_eff
     corr_cut_dynamic = (float(corr_sorted[int(n_corr * CORR_CUT_PERCENTILE)])
                         if n_corr > 0 else 0.9995)
 
+    print(f">>> Correlation interval lower bound (above heater): {corr_valid_min_eff:.6f}")
     print(f">>> Correlation Cut ({int(CORR_CUT_PERCENTILE*100)}th percentile): {corr_cut_dynamic:.6f}")
 
     # Scatter (decimated for display) and distribution of the correlation.
@@ -2010,9 +2165,24 @@ def run_stabilization(
     g_corr_vs_heat.SetTitle(
         f"Ch {ch_id}: Correlation vs Heat Amplitude; Heat Amplitude; Correlation")
 
+    # Diagnostic scatter for the correlation plot's left panel: ALL quality
+    # events (blue) with the heater events overlaid (red). It lets one check by
+    # eye that the lower-bound line sits just ABOVE the dense heater block.
+    g_phys_disp   = make_scatter_graph(ha, corr)
+    g_heater_disp = make_scatter_graph(heater_amps, heater_corrs)
+    # Display y-range: from a bit below the heater block up to 1, so both the
+    # heater cluster and the lower-bound line are visible.
+    _hblock = heater_corrs[np.isfinite(heater_corrs) & (heater_corrs > HEATER_CORR_MIN)]
+    corr_disp_lo = ((min(corr_valid_min_eff, float(np.median(_hblock))) - 0.003)
+                    if _hblock.size else corr_valid_min_eff - 0.003)
+    # Fixed x-range (amplitude has far outliers that would flatten the scatter).
+    corr_disp_xlo, corr_disp_xhi = 0.0, 12000.0
+
+    # Histogram spans the whole percentile interval: from the heater lower bound
+    # (corr_valid_min_eff) up to 1, so the vertical cut line can be checked.
     h_corr = ROOT.TH1F(f"h_corr_{ch_id}",
                         f"Ch {ch_id}: Correlation Distribution; Correlation; Counts",
-                        100, corr_hist_min, 1.00005)
+                        100, corr_valid_min_eff, 1.00005)
     if n_corr > 0:
         h_corr.FillN(n_corr, corr_sorted.astype(np.double), np.ones(n_corr, np.double))
 
@@ -2316,7 +2486,7 @@ def run_stabilization(
             mean_raw = float(np.median(all_raw))
         all_before = TARGET_ENERGY * all_raw / mean_raw
 
-    h_before_comb, fit_before_comb, h_heat_cal_comb, fit_cal_comb = shared_before_after_fits(
+    h_before_comb, fit_before_comb, h_heat_cal_comb, fit_cal_comb = combined_before_after_fits(
         all_before if all_before.size > 0 else None,
         all_after  if all_after.size  > 0 else None,
         TARGET_ENERGY, f"comb_{ch_id}")
@@ -2682,22 +2852,80 @@ def run_stabilization(
     # ----------------------------------------------------------- CORRELATION
     make_corr = show_canvas or save_corr_jpeg
     if make_corr:
-        c_corr = ROOT.TCanvas(f"c_corr_{ch_id}", f"Correlation Analysis Ch {ch_id}", 1200, 600)
-        c_corr.Divide(2, 1)
+        c_corr = ROOT.TCanvas(f"c_corr_{ch_id}", f"Correlation Analysis Ch {ch_id}", 1800, 600)
+        c_corr.Divide(3, 1)
+
+        # -- Left: correlation vs heat amplitude (physics blue + heater red) -----
+        # Horizontal line at corr_valid_min_eff: the correlation value just ABOVE
+        # the heater cluster (the minimum of the percentile interval). The heater
+        # events (red) let one verify the line sits just above their block.
         c_corr.cd(1); ROOT.gPad.SetGrid()
-        g_corr_vs_heat.SetMarkerStyle(20); g_corr_vs_heat.SetMarkerSize(0.4)
-        g_corr_vs_heat.SetMarkerColor(ROOT.kBlack); g_corr_vs_heat.Draw("AP"); c_corr.Update()
-        lc1 = ROOT.TLine(ROOT.gPad.GetUxmin(), corr_cut_dynamic,
-                          ROOT.gPad.GetUxmax(), corr_cut_dynamic)
-        lc1.SetLineColor(ROOT.kRed); lc1.SetLineWidth(2); lc1.SetLineStyle(2)
+        frame_corr = ROOT.gPad.DrawFrame(
+            corr_disp_xlo, corr_disp_lo, corr_disp_xhi, 1.00005,
+            f"Ch {ch_id}: Correlation vs Heat Amplitude; Heat Amplitude; Correlation")
+        global_lines.append(frame_corr)
+        g_phys_disp.SetMarkerStyle(20); g_phys_disp.SetMarkerSize(0.4)
+        g_phys_disp.SetMarkerColor(ROOT.kBlue); g_phys_disp.Draw("P same")
+        if g_heater_disp.GetN() > 0:
+            g_heater_disp.SetMarkerStyle(20); g_heater_disp.SetMarkerSize(0.4)
+            g_heater_disp.SetMarkerColor(ROOT.kRed); g_heater_disp.Draw("P same")
+        c_corr.Update()
+        lc1 = ROOT.TLine(ROOT.gPad.GetUxmin(), corr_valid_min_eff,
+                          ROOT.gPad.GetUxmax(), corr_valid_min_eff)
+        lc1.SetLineColor(ROOT.kAzure + 1); lc1.SetLineWidth(2); lc1.SetLineStyle(2)
         lc1.Draw("same"); global_lines.append(lc1)
-        c_corr.cd(2); ROOT.gPad.SetGrid()
+        leg1 = ROOT.TLegend(0.30, 0.13, 0.88, 0.30)
+        leg1.SetTextSize(0.03); leg1.SetFillColorAlpha(ROOT.kWhite, 0.7)
+        leg1.AddEntry(g_phys_disp,   "physics events", "p")
+        leg1.AddEntry(g_heater_disp, "heater events",  "p")
+        leg1.AddEntry(lc1, f"min (above heater) = {corr_valid_min_eff:.6f}", "l")
+        leg1.Draw("same"); global_lines.append(leg1)
+
+        # -- Middle: heater correlation histogram + fit + threshold line ---------
+        # The heater-only correlation distribution, the Gaussian fit of its
+        # rightmost peak, and a vertical line at corr_valid_min_eff
+        # (= mean + HEATER_CORR_NSIGMA*sigma, the lower bound derived from the
+        # fit). The x-range matches the first scatter's y-range so the two panels
+        # line up. Log-y so the low pedestal shows.
+        c_corr.cd(2); ROOT.gPad.SetGrid(); ROOT.gPad.SetLogy()
+        if h_corr_heater is not None:
+            h_corr_heater.SetLineColor(ROOT.kBlack)
+            h_corr_heater.SetFillColorAlpha(ROOT.kRed, 0.3)
+            h_corr_heater.GetXaxis().SetRangeUser(
+                max(corr_disp_lo, HEATER_CORR_MIN), 1.00005)
+            h_corr_heater.Draw()
+            if fit_corr_heater is not None:
+                fit_corr_heater.SetLineColor(ROOT.kBlue); fit_corr_heater.SetLineWidth(2)
+                fit_corr_heater.Draw("same")
+            c_corr.Update()
+            # Log-y pad: gPad y-limits are log10; convert back for the TLine.
+            y_lo2, y_hi2 = 10 ** ROOT.gPad.GetUymin(), 10 ** ROOT.gPad.GetUymax()
+            lc2 = ROOT.TLine(corr_valid_min_eff, y_lo2, corr_valid_min_eff, y_hi2)
+            lc2.SetLineColor(ROOT.kAzure + 1); lc2.SetLineWidth(2); lc2.SetLineStyle(2)
+            lc2.Draw("same"); global_lines.append(lc2)
+            leg2 = ROOT.TLegend(0.13, 0.75, 0.70, 0.88)
+            leg2.SetTextSize(0.03); leg2.SetFillColorAlpha(ROOT.kWhite, 0.7)
+            if fit_corr_heater is not None:
+                leg2.AddEntry(fit_corr_heater, "heater peak fit", "l")
+            leg2.AddEntry(lc2, f"min (mean+{HEATER_CORR_NSIGMA:g}#sigma) = "
+                               f"{corr_valid_min_eff:.6f}", "l")
+            leg2.Draw("same"); global_lines.append(leg2)
+
+        # -- Right: correlation distribution [min, 1], with the actual cut line --
+        # Histogram runs from corr_valid_min_eff to 1; vertical line at the real
+        # cut corr_cut_dynamic (the CORR_CUT_PERCENTILE-th percentile).
+        c_corr.cd(3); ROOT.gPad.SetGrid()
         h_corr.SetLineColor(ROOT.kBlack); h_corr.SetFillColorAlpha(ROOT.kBlack, 0.3)
         h_corr.Draw(); c_corr.Update()
-        lc2 = ROOT.TLine(corr_cut_dynamic, ROOT.gPad.GetUymin(),
+        lc3 = ROOT.TLine(corr_cut_dynamic, ROOT.gPad.GetUymin(),
                           corr_cut_dynamic, ROOT.gPad.GetUymax())
-        lc2.SetLineColor(ROOT.kRed); lc2.SetLineWidth(2); lc2.SetLineStyle(2)
-        lc2.Draw("same"); global_lines.append(lc2)
+        lc3.SetLineColor(ROOT.kRed); lc3.SetLineWidth(2); lc3.SetLineStyle(2)
+        lc3.Draw("same"); global_lines.append(lc3)
+        leg3 = ROOT.TLegend(0.13, 0.78, 0.62, 0.88)
+        leg3.SetTextSize(0.03); leg3.SetFillColorAlpha(ROOT.kWhite, 0.7)
+        leg3.AddEntry(lc3, f"cut ({int(CORR_CUT_PERCENTILE*100)}th pct) = {corr_cut_dynamic:.6f}", "l")
+        leg3.Draw("same"); global_lines.append(leg3)
+
         c_corr.Update()
         if save_corr_jpeg:
             corr_dir = os.path.join(output_dir, CORR_DIR_NAME)
@@ -2776,6 +3004,7 @@ def run_stabilization(
         GLOBAL_KEEPALIVE.extend(global_lines)
 
         keep = [h_cal_rough, h_raw, h_corr, g_corr_vs_heat, h2_full,
+                g_phys_disp, g_heater_disp, h_corr_heater, fit_corr_heater,
                 g_base_part, g_base_time, h_base_part,
                 h_heat_cal_comb, fit_cal_comb, h_before_comb, fit_before_comb]
         if apply_ly_cut:

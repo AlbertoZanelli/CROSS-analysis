@@ -144,10 +144,10 @@ GLOBAL_KEEPALIVE = []
 ANALYSIS_MODE = "mergedrun"     # "mergedrun" or "run"
 
 # mergedrun mode: folder containing the input .root files.
-BASE_DIR = "/data/users/azanelli/octopus_work/CROSS/MergedRuns/CorrectedAmp"
+BASE_DIR = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS/MergedRuns/CorrectedAmp"  # e.g. .../MergedRuns/CorrectedAmps
 
 # run mode: CROSS folder holding the RUNxxxxxx sub-folders, and the run number.
-CROSS_DIR  = "/data/users/azanelli/octopus_work/CROSS"
+CROSS_DIR  = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS"
 RUN_NUMBER = 92                 # e.g. 96 -> folder RUN000096, sub-folder Coincidence
 
 # --- Channels to analyse (number after "ch" in the file name) ---------------

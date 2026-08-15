@@ -264,15 +264,15 @@ CHAIN_FULL_BINS   = 80     # bins of the full-range spectra (first row)
 # +/-CHAIN_WIN_NSIGMA sigma, the bin width ~ sigma/CHAIN_BIN_DIV (resolution cap
 # only, no statistics cap), and the fit lets the width move within
 # [CHAIN_SIG_LO, CHAIN_SIG_HI] x the measured one.
-CHAIN_WIN_NSIGMA = 5      # half-window, in sigma
-CHAIN_BIN_DIV    = 5.0    # bin width ~ sigma / this
+CHAIN_WIN_NSIGMA = 6      # half-window, in sigma
+CHAIN_BIN_DIV    = 4
 CHAIN_MIN_BINS   = 15
 CHAIN_MAX_BINS   = 200
 # The peak width is bounded by an ABSOLUTE band, as a fraction of the width the
 # stabilization itself measured (see chain_expected_width): a band derived from the
 # locally measured width cannot stop the fit from ballooning, because it is exactly
 # that measurement which fails when the line sits on a strong continuum.
-CHAIN_PEAK_NSIGMA = 6.0   # peak interval: partition peak +/- this many sigmas
+CHAIN_PEAK_NSIGMA = 6 # peak interval: partition peak +/- this many sigmas
 CHAIN_SIG_LO     = 0.3    # width bound, as a fraction of the EXPECTED sigma
 CHAIN_SIG_HI     = 1.5
 # The chain fit window is the interval where the THALLIUM EVENTS sit, built from
@@ -294,7 +294,7 @@ TL_MIN_NSIGMA    = 4.0
 # EMPTY bins. Close peaks with counts between them stay in the same partition.
 PART_N_BINS          = 200    # bins of the baseline histogram used for the search
 PART_MIN_GAP_BINS    = 4     # a separation needs at least this many consecutive low bins
-PART_GAP_HEIGHT_FRAC = 0.05   # a bin belongs to a GAP when its height is below this fraction
+PART_GAP_HEIGHT_FRAC = 0.03   # a bin belongs to a GAP when its height is below this fraction
                               # of the tallest block: gaps are judged by RELATIVE height, not
                               # raw counts (a few stray counts in a deep valley still separate)
 PART_MIN_BLOCK_FRAC  = 0.15   # blocks below this fraction of the MOST POPULATED block are

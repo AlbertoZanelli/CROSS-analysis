@@ -98,6 +98,7 @@ import math
 import time
 import traceback
 import argparse
+import csv
 import re
 from array import array
 
@@ -264,15 +265,43 @@ CHAIN_FULL_BINS   = 80     # bins of the full-range spectra (first row)
 # +/-CHAIN_WIN_NSIGMA sigma, the bin width ~ sigma/CHAIN_BIN_DIV (resolution cap
 # only, no statistics cap), and the fit lets the width move within
 # [CHAIN_SIG_LO, CHAIN_SIG_HI] x the measured one.
+
 CHAIN_WIN_NSIGMA = 6      # half-window, in sigma
 CHAIN_BIN_DIV    = 4
 CHAIN_MIN_BINS   = 15
 CHAIN_MAX_BINS   = 200
+
 # The peak width is bounded by an ABSOLUTE band, as a fraction of the width the
 # stabilization itself measured (see chain_expected_width): a band derived from the
 # locally measured width cannot stop the fit from ballooning, because it is exactly
 # that measurement which fails when the line sits on a strong continuum.
 CHAIN_PEAK_NSIGMA = 6 # peak interval: partition peak +/- this many sigmas
+CHAIN_PEAK_NSIGMA = 6.0   # peak interval: partition peak +/- this many sigmas
+# Per-variable widening of that interval for rows 2 and 3, in the order of the
+# chain variables: calibration rough, heater stabilized, corrected amplitude,
+# thallium stabilized. The interval is one fraction for the whole channel, but the
+# amplitudes BEFORE the stabilization carry a broader line (the drift between
+# partitions is still in it), so they need a wider view to keep a white margin on
+# both sides of the peak. The bin width does not change: a wider window simply
+# shows more histogram. Set an entry to 1.0 to leave that variable as it is.
+CHAIN_WIN_SCALE   = [1.0, 1.5, 1.5, 1.0]
+
+# --- Per-channel settings of the chain comparison, on file ------------------
+# The values above are the DEFAULTS. They can be tuned per channel in a CSV, one
+# row per channel, so a channel that needs a wider view (or a different binning)
+# does not force a change that affects all the others.
+#
+# The file maintains itself: any analysed channel missing from it is APPENDED with
+# the values currently set in the program (so after one run the file lists every
+# channel, ready to be edited by hand). Existing rows are NEVER rewritten -- that
+# is what keeps hand-tuned values safe -- so there is no "save" flag to remember:
+# to reset a channel to the program defaults, delete its row.
+#
+# USE_CHAIN_CSV only decides whether the file is READ: with False the program
+# values are used for everything, and the file is still kept up to date.
+CHAIN_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "chain_settings.csv")
+USE_CHAIN_CSV  = True
 CHAIN_SIG_LO     = 0.3    # width bound, as a fraction of the EXPECTED sigma
 CHAIN_SIG_HI     = 1.5
 # The chain fit window is the interval where the THALLIUM EVENTS sit, built from
@@ -319,6 +348,10 @@ PEAK_HINT_NSIGMA        = 8.0   # search half-width, in hint sigmas
 # the local position is adopted only above PEAK_SIGNIF_MIN standard deviations.
 PEAK_SIGNIF_NSIGMA      = 2.0
 PEAK_SIGNIF_MIN         = 3.0
+# Fewer clean events than this in a partition: no local line is fitted, the
+# partition inherits the nearest fitted one (a Gaussian and a linear fit need a
+# handful of points to mean anything, and zero points cannot even be histogrammed).
+PART_MIN_CLEAN_EVENTS   = 5
 
 # --- PREVIOUS VERSION (kept for easy rollback) ------------------------------
 # The half-width was the LARGER of a sigma-based and a range-based estimate, so
@@ -1447,7 +1480,74 @@ def rough_to_units(values, cal_rough, mask):
     return float(np.median(v[good] / r[good])) if good.any() else 1.0
 
 
-def chain_peak_interval(part_results):
+class ChainSettings:
+    """Settings of the amplitude-chain comparison for ONE channel (see CHAIN_CSV_PATH)."""
+    # CSV columns, after "channel". The four win_scale entries are keyed by chain
+    # variable, not by position, so they stay attached to the right variable even
+    # when a column is not plotted (e.g. the heater one on an optimum-filter channel).
+    FIELDS = ("win_scale_rough", "win_scale_heater", "win_scale_corrected",
+              "win_scale_stabilized", "peak_nsigma", "bin_div", "sig_lo", "sig_hi")
+
+    def __init__(self, values=None):
+        d = dict(zip(self.FIELDS, [
+            *(CHAIN_WIN_SCALE + [1.0] * 4)[:4],
+            CHAIN_PEAK_NSIGMA, CHAIN_BIN_DIV, CHAIN_SIG_LO, CHAIN_SIG_HI]))
+        if values:
+            for k in self.FIELDS:
+                if values.get(k) not in (None, ""):
+                    d[k] = float(values[k])
+        for k, v in d.items():
+            setattr(self, k, v)
+
+    def win_scale(self, key):
+        """Window widening of the chain variable *key* ('rough', 'heater', ...)."""
+        return getattr(self, f"win_scale_{key}", 1.0)
+
+    def as_row(self, ch_id):
+        row = {"channel": ch_id}
+        row.update({k: getattr(self, k) for k in self.FIELDS})
+        return row
+
+
+def chain_settings(ch_id):
+    """
+    Settings of the chain comparison for channel *ch_id*.
+
+    Read from CHAIN_CSV_PATH when USE_CHAIN_CSV and the channel has a row there;
+    otherwise the program defaults. Either way, a channel with no row is appended
+    to the file with the values in use, so the CSV ends up listing every analysed
+    channel without a separate "save" step. Existing rows are left untouched.
+    """
+    rows, header = [], ["channel", *ChainSettings.FIELDS]
+    if os.path.exists(CHAIN_CSV_PATH):
+        try:
+            with open(CHAIN_CSV_PATH, newline="") as fh:
+                rows = list(csv.DictReader(fh))
+        except OSError as e:
+            print(f"  [!] Cannot read {CHAIN_CSV_PATH}: {e}", file=sys.stderr)
+
+    mine = next((r for r in rows if str(r.get("channel", "")).strip() == str(ch_id)), None)
+    cfg  = ChainSettings(mine if (mine and USE_CHAIN_CSV) else None)
+    if mine is not None:
+        if USE_CHAIN_CSV:
+            print(f">>> Chain settings for ch {ch_id} read from "
+                  f"{os.path.basename(CHAIN_CSV_PATH)}.")
+        return cfg
+
+    try:                                  # channel not on file yet: append it
+        with open(CHAIN_CSV_PATH, "a", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=header)
+            if not rows and fh.tell() == 0:
+                w.writeheader()
+            w.writerow(cfg.as_row(ch_id))
+        print(f">>> Chain settings of ch {ch_id} added to "
+              f"{os.path.basename(CHAIN_CSV_PATH)} (program values).")
+    except OSError as e:
+        print(f"  [!] Cannot write {CHAIN_CSV_PATH}: {e}", file=sys.stderr)
+    return cfg
+
+
+def chain_peak_interval(part_results, peak_nsigma=None):
     """
     Where the thallium peak is, and how wide, from the per-partition peaks the
     stabilization has already fitted. Returns (frac_lo, frac_hi, res_exp):
@@ -1484,13 +1584,14 @@ def chain_peak_interval(part_results):
         return 0.0, CHAIN_SIG_TYPICAL
     sig_in = sum(s * n for _, s, n in peaks) / w_tot
     spread = math.sqrt(sum(n * (m - mu_avg) ** 2 for m, _, n in peaks) / w_tot)
-    lo = min(m - CHAIN_PEAK_NSIGMA * s for m, s, _ in peaks)
-    hi = max(m + CHAIN_PEAK_NSIGMA * s for m, s, _ in peaks)
+    nsig = CHAIN_PEAK_NSIGMA if peak_nsigma is None else peak_nsigma
+    lo = min(m - nsig * s for m, s, _ in peaks)
+    hi = max(m + nsig * s for m, s, _ in peaks)
     frac = max(1.0 - lo / mu_avg, hi / mu_avg - 1.0, 0.0)
     return frac, math.hypot(sig_in, spread) / mu_avg
 
 
-def fit_peak_centred(values, values_peak, tag, interval, background="pol1"):
+def fit_peak_centred(values, values_peak, tag, interval, cfg, background="pol1"):
     """
     Fit the thallium peak of *values* with the recipe of ThalliumStabilization_old:
 
@@ -1529,15 +1630,15 @@ def fit_peak_centred(values, values_peak, tag, interval, background="pol1"):
 
     frac, res_exp = interval
     sigma   = res_exp * abs(mu)                    # expected width in these units
-    sig_min = CHAIN_SIG_LO * sigma
-    sig_max = CHAIN_SIG_HI * sigma
+    sig_min = cfg.sig_lo * sigma
+    sig_max = cfg.sig_hi * sigma
     if not (sig_max > sig_min > 0):
         return None, None, 0.0, 0.0
     if frac > 0.0:
         lo, hi = mu * (1.0 - frac), mu * (1.0 + frac)
     else:                                          # no partition peak available
         lo, hi = mu - CHAIN_WIN_NSIGMA * sigma, mu + CHAIN_WIN_NSIGMA * sigma
-    nb = int(np.clip(round((hi - lo) / (sigma / CHAIN_BIN_DIV)),
+    nb = int(np.clip(round((hi - lo) / (sigma / cfg.bin_div)),
                      CHAIN_MIN_BINS, CHAIN_MAX_BINS))
     h, f = fit_thallium_peak(values, mu, lo, hi, nb, sigma, tag,
                              sigma_bounds=(sig_min, sig_max), background=background)
@@ -1888,9 +1989,20 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
         f"Ch {ch_id} P{idx}: Thallium Peak AFTER stabilization;Amplitude;Counts",
         params_clean.bins, params_clean.vis_min, params_clean.vis_max)
 
-    if res.n_clean > 0:
-        res.h_heat_clean.FillN(res.n_clean, clean_amps_np.astype(np.double),
-                               np.ones(res.n_clean, np.double))
+    # A partition whose cleaning window keeps (almost) nothing cannot be fitted:
+    # give up on it here, leaving slope == q_0 == 0 so that run_stabilization makes
+    # it inherit the nearest fitted partition's line. Going on would build a TGraph
+    # with zero points, which the ROOT bindings reject (and crash on, on some
+    # builds), and would fit an empty histogram.
+    if res.n_clean < PART_MIN_CLEAN_EVENTS:
+        print(f"  -> Ch {ch_id} P{idx}: only {res.n_clean} event(s) left by the "
+              f"cleaning window (< {PART_MIN_CLEAN_EVENTS}); no local line, it will "
+              f"inherit the nearest partition's.")
+        res.sufficient = False
+        return res
+
+    res.h_heat_clean.FillN(res.n_clean, clean_amps_np.astype(np.double),
+                           np.ones(res.n_clean, np.double))
 
     res.g_heat_vs_base_clean = ROOT.TGraph(res.n_clean,
                                            clean_bases_np.astype(np.double),
@@ -2763,12 +2875,20 @@ def run_stabilization(
     # 'corrected_amplitude' except on the OPTIMUM_FILTER_CHANNELS.
     main_label = ("Corrected amplitude" if main_tree_name == AMP_TREE_DEFAULT
                   else main_tree_name)
+    # (key, label, values, x-axis title, colour). The key ties the variable to its
+    # per-channel settings (ChainSettings), independently of the column position.
+    # On an OPTIMUM_FILTER_CHANNELS channel the main amplitude IS the optimum-filter
+    # one, so the heater-stabilized column is dropped: it is an earlier step of a
+    # chain that channel does not follow, and it would only add a panel that has
+    # nothing to do with the amplitude actually stabilized.
     chain_defs = [
-        ("Calibration rough",   cal_rough,   "Rough amplitude",  ROOT.kAzure + 1),
-        ("Heater stabilized",   amp_stab,    "Amplitude (a.u.)", ROOT.kGreen + 2),
-        (main_label,            ha,          "Amplitude (a.u.)", ROOT.kGray + 2),
-        ("Thallium stabilized", amp_tl_stab, "Energy (keV)",     ROOT.kRed + 1),
+        ("rough",      "Calibration rough",   cal_rough,   "Rough amplitude",  ROOT.kAzure + 1),
+        ("heater",     "Heater stabilized",   amp_stab,    "Amplitude (a.u.)", ROOT.kGreen + 2),
+        ("corrected",  main_label,            ha,          "Amplitude (a.u.)", ROOT.kGray + 2),
+        ("stabilized", "Thallium stabilized", amp_tl_stab, "Energy (keV)",     ROOT.kRed + 1),
     ]
+    if use_optimum_filter:
+        chain_defs = [c for c in chain_defs if c[0] != "heater"]
 
     # Thallium peak position in ROUGH units, measured where the line dominates
     # (mask_conv = correlation cut + Tl window). Converted with each variable's
@@ -2780,13 +2900,14 @@ def run_stabilization(
 
     # Width expected for the thallium peak of this channel, from the partition
     # peaks the stabilization already measured: it bounds every panel's fit.
-    tl_interval = chain_peak_interval(part_results)
+    cfg = chain_settings(ch_id)
+    tl_interval = chain_peak_interval(part_results, cfg.peak_nsigma)
     print(f">>> Chain fit window: +/-{100*tl_interval[0]:.2f}% around the peak, "
           f"expected width {100*tl_interval[1]:.2f}% (both from the partition peaks).")
 
     # --- rows 1 and 2: each variable in its OWN units ------------------------
     chain = []
-    for i, (label, values, xtitle, colour) in enumerate(chain_defs):
+    for i, (key, label, values, xtitle, colour) in enumerate(chain_defs):
         if values is None:
             continue
         # mask_conv (correlation cut + Tl window) is the same sample the raw/rough
@@ -2807,20 +2928,22 @@ def run_stabilization(
         # Rows 2 and 3: the peak is measured on the stabilization-window events
         # (where the line dominates) and framed with the thallium interval.
         sel_peak = sel[(sel > cal_stab_min * k) & (sel < cal_stab_max * k)]
+        # Widen the shared peak interval for this variable (see CHAIN_WIN_SCALE).
+        interval = (tl_interval[0] * cfg.win_scale(key), tl_interval[1])
         h_zoom, fit_zoom, mu, sigma = fit_peak_centred(
-            sel, sel_peak, f"h_chain_zoom_{ch_id}_{i}", tl_interval)
+            sel, sel_peak, f"h_chain_zoom_{ch_id}_{i}", interval, cfg)
         if h_zoom is not None:
             h_zoom.SetTitle(f"Ch {ch_id}: {label} - peak;{xtitle};Counts")
         # Same fit with a FLAT background, drawn in a parallel canvas: over a window
         # this narrow the continuum is nearly flat, and a constant has one parameter
         # less to spend on the few counts around the peak.
         h_zoom_c, fit_zoom_c, _, _ = fit_peak_centred(
-            sel, sel_peak, f"h_chain_zoomc_{ch_id}_{i}", tl_interval, background="pol0")
+            sel, sel_peak, f"h_chain_zoomc_{ch_id}_{i}", interval, cfg, background="pol0")
         if h_zoom_c is not None:
             h_zoom_c.SetTitle(f"Ch {ch_id}: {label} - peak;{xtitle};Counts")
 
         chain.append(dict(
-            idx=i, label=label, colour=colour, h_full=h_full,
+            idx=i, label=label, colour=colour, h_full=h_full, interval=interval,
             h_zoom=h_zoom, fit_zoom=fit_zoom,
             h_zoom_c=h_zoom_c, fit_zoom_c=fit_zoom_c,
             # the same sample rescaled so its peak sits on TARGET_ENERGY (row 3)
@@ -2838,10 +2961,11 @@ def run_stabilization(
         if p["energy"] is None:
             continue
         p["h_energy"], p["fit_energy"], _, _ = fit_peak_centred(
-            p["energy"], p["energy_peak"], f"h_chain_energy_{ch_id}_{p['idx']}", tl_interval)
+            p["energy"], p["energy_peak"], f"h_chain_energy_{ch_id}_{p['idx']}",
+            p["interval"], cfg)
         p["h_energy_c"], p["fit_energy_c"], _, _ = fit_peak_centred(
             p["energy"], p["energy_peak"], f"h_chain_energyc_{ch_id}_{p['idx']}",
-            tl_interval, background="pol0")
+            p["interval"], cfg, background="pol0")
         for _h in (p["h_energy"], p["h_energy_c"]):
             if _h is not None:
                 _h.SetTitle(f"Ch {ch_id}: {p['label']} - energy;Energy (keV);Counts")

@@ -128,8 +128,12 @@ Fit `gaus(0) + pol1(3)` (o `pol0`), likelihood poissoniana `"Q0 R L"`, con vinco
 ```
 channel,win_scale_rough,win_scale_heater,win_scale_corrected,win_scale_stabilized,
         bin_div_rough,bin_div_heater,bin_div_corrected,bin_div_stabilized,
+        sig_scale_rough,sig_scale_heater,sig_scale_corrected,sig_scale_stabilized,
         peak_nsigma,sig_lo,sig_hi
 ```
+
+Aggiungere una colonna è sicuro: all'apertura il file viene **aggiornato in place**, le celle mancanti
+riempite con i default del programma (le righe tarate a mano restano tali).
 
 - `USE_CHAIN_CSV = True` → i valori del CSV vincono sui default del programma.
 - Il file **si mantiene da solo**: un canale assente viene *aggiunto* coi valori correnti; le righe
@@ -137,6 +141,17 @@ channel,win_scale_rough,win_scale_heater,win_scale_corrected,win_scale_stabilize
   canale: cancellarne la riga. Non serve una flag di salvataggio.
 - `win_scale_*` allarga la finestra di quel solo pannello (utile per picchi sdoppiati: ch27 rough usa 3).
 - `bin_div_*` è la larghezza dei bin, `σ/valore` — più alto = bin più fini.
+- `sig_scale_*` moltiplica la **larghezza attesa** di quella sola variabile. La larghezza viene dalle
+  partizioni della stabilizzazione, quindi vale per l'ampiezza principale e per la stabilizzata; le
+  ampiezze *prima* possono avere una riga molto più larga (calibrazione rough scentrata di qualche %)
+  e con la larghezza sbagliata **non sono fittabili affatto**: il fit sbatte sul limite inferiore di σ
+  e si aggancia a un singolo bin. Poiché la larghezza attesa fissa binning, vincoli su σ e guinzaglio
+  sulla media, è l'unico modo di allargare quel pannello senza toccare gli altri
+  (`sig_lo`/`sig_hi` sono per canale, non per variabile).
+  Casi reali: **ch60 rough** σ_vera ≈ 22 contro 5.9 attesa → `sig_scale_rough=4.5`, `win_scale_rough=3`,
+  `bin_div_rough=2.5` (prima: σ = 1.77 sul limite, risoluzione 0.16 % priva di senso → ora 1.73 ± 0.33 %).
+  **ch27 rough** → `sig_scale_rough=2` (prima riga 2 = 0.34 % e riga 3 = 0.90 % sugli stessi eventi,
+  segno tipico di un intervallo di σ che ammette sia lo spike sia la riga vera; ora entrambe 1.31 ± 0.24 %).
 
 ---
 

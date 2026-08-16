@@ -311,6 +311,17 @@ CHAIN_PEAK_NSIGMA = 6.0   # peak interval: partition peak +/- this many sigmas
 # both sides of the peak. The bin width does not change: a wider window simply
 # shows more histogram. Set an entry to 1.0 to leave that variable as it is.
 CHAIN_WIN_SCALE   = [1.0, 1.5, 1.5, 1.0]
+# Per-variable scale of the EXPECTED WIDTH, same order. The width comes from the
+# partition peaks of the stabilization, i.e. from the amplitude the stabilization
+# works on: it is right for that variable and for the stabilized one, but the
+# amplitudes BEFORE it can carry a much broader line (a rough calibration a few
+# per cent off spreads the line over several times its own width). Since the
+# expected width sets the binning, the sigma bounds and the leash on the mean,
+# a line that broad cannot be fitted at all with the width of another variable:
+# the fit hits the lower sigma bound and locks onto a single spike. This factor
+# multiplies the expected width for ONE variable only, leaving the others alone.
+# Per channel in the CSV (sig_scale_<key>); 1.0 = width as measured.
+CHAIN_SIG_SCALE   = [1.0, 1.0, 1.0, 1.0]
 
 # --- Per-channel settings of the chain comparison, on file ------------------
 # The values above are the DEFAULTS. They can be tuned per channel in a CSV, one
@@ -1555,12 +1566,14 @@ class ChainSettings:
     # when a column is not plotted (e.g. the heater one on an optimum-filter channel).
     KEYS   = ("rough", "heater", "corrected", "stabilized")
     FIELDS = (*(f"win_scale_{k}" for k in KEYS), *(f"bin_div_{k}" for k in KEYS),
+              *(f"sig_scale_{k}" for k in KEYS),
               "peak_nsigma", "sig_lo", "sig_hi")
 
     def __init__(self, values=None):
         d = dict(zip(self.FIELDS, [
             *(list(CHAIN_WIN_SCALE) + [1.0] * 4)[:4],
             *(list(CHAIN_BIN_DIV)   + [4.0] * 4)[:4],
+            *(list(CHAIN_SIG_SCALE) + [1.0] * 4)[:4],
             CHAIN_PEAK_NSIGMA, CHAIN_SIG_LO, CHAIN_SIG_HI]))
         if values:
             for k in self.FIELDS:
@@ -1577,6 +1590,10 @@ class ChainSettings:
         """Window widening of the chain variable *key* ('rough', 'heater', ...)."""
         return getattr(self, f"win_scale_{key}", 1.0)
 
+    def sig_scale(self, key):
+        """Scale of the EXPECTED width for the chain variable *key*."""
+        return getattr(self, f"sig_scale_{key}", 1.0)
+
     def as_row(self, ch_id):
         row = {"channel": ch_id}
         row.update({k: getattr(self, k) for k in self.FIELDS})
@@ -1592,13 +1609,32 @@ def chain_settings(ch_id):
     to the file with the values in use, so the CSV ends up listing every analysed
     channel without a separate "save" step. Existing rows are left untouched.
     """
-    rows, header = [], ["channel", *ChainSettings.FIELDS]
+    rows, header, on_file = [], ["channel", *ChainSettings.FIELDS], None
     if os.path.exists(CHAIN_CSV_PATH):
         try:
             with open(CHAIN_CSV_PATH, newline="") as fh:
-                rows = list(csv.DictReader(fh))
+                reader  = csv.DictReader(fh)
+                rows    = list(reader)
+                on_file = list(reader.fieldnames or [])
         except OSError as e:
             print(f"  [!] Cannot read {CHAIN_CSV_PATH}: {e}", file=sys.stderr)
+
+    # A new setting adds a COLUMN: an older file is upgraded in place, the missing
+    # cells filled with the program defaults (ChainSettings does that on read).
+    # Without this the appended rows would be written against a header that does
+    # not describe them, and every value after the missing column would shift.
+    if on_file is not None and any(f not in on_file for f in header):
+        try:
+            upgraded = [ChainSettings(r).as_row(str(r.get("channel", "")).strip())
+                        for r in rows]
+            with open(CHAIN_CSV_PATH, "w", newline="") as fh:
+                w = csv.DictWriter(fh, fieldnames=header, extrasaction="ignore")
+                w.writeheader()
+                w.writerows(upgraded)
+            print(f">>> {os.path.basename(CHAIN_CSV_PATH)} upgraded with the new "
+                  f"columns ({', '.join(f for f in header if f not in on_file)}).")
+        except OSError as e:
+            print(f"  [!] Cannot upgrade {CHAIN_CSV_PATH}: {e}", file=sys.stderr)
 
     mine = next((r for r in rows if str(r.get("channel", "")).strip() == str(ch_id)), None)
     cfg  = ChainSettings(mine if (mine and USE_CHAIN_CSV) else None)
@@ -1833,8 +1869,13 @@ def fit_peak_centred(values, mu, tag, interval, cfg, key, background="pol1"):
     # search: fit_thallium_peak keeps the mean within PEAK_MEAN_MAX_SHIFT sigmas of
     # the centre, so the window cannot walk away onto the continuum.
     n_pass = 2 if refine else 1
+    # Expected width for THIS variable: the one the stabilization measured, times
+    # the per-variable factor (see CHAIN_SIG_SCALE). It sets the binning, the
+    # bounds on the fitted width and the leash on the mean, so on a variable
+    # whose line is genuinely broader it has to be scaled up or nothing fits.
+    res_var = res_exp * cfg.sig_scale(key)
     for _pass in range(n_pass):
-        sigma   = res_exp * abs(mu)                # expected width in these units
+        sigma   = res_var * abs(mu)                # expected width in these units
         sig_min = cfg.sig_lo * sigma
         sig_max = cfg.sig_hi * sigma
         if not (sig_max > sig_min > 0):

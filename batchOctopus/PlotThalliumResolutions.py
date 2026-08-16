@@ -18,9 +18,12 @@
    2. SIGNIFICANCE -- how significant the resolution change produced by the
       thallium stabilization is, channel by channel:
 
-          z = (R_heater2 - R_Tl) / sqrt(sigma_heater2^2 + sigma_Tl^2)
+          z = (R_before - R_after) / sqrt(sigma_before^2 + sigma_after^2)
 
-      positive when the resolution IMPROVES. The normalised difference of two
+      positive when the resolution IMPROVES. "before" is the last step the
+      channel has before the thallium stabilization: normally the second heater
+      stabilization, but the optimum-filter channels have no heater chain and
+      are compared against their own amplitude (drawn as hollow markers). The normalised difference of two
       fitted quantities follows a Student t, not a Gaussian, so the "not
       significant" band is drawn at the two-sided 95 % t quantile computed
       channel by channel with the effective number of degrees of freedom
@@ -90,8 +93,14 @@ STEPS = [
 STEP_LABEL = {k: lab for k, lab, _, _ in STEPS}
 
 # The two steps compared in the significance figure: before and after the
-# thallium stabilization.
-Z_BEFORE, Z_AFTER = "corrected", "stabilized"
+# thallium stabilization. The "before" is the LAST step preceding it that the
+# channel actually has -- a channel with no heater stabilization has no
+# 'corrected' column at all (its amplitude is the optimum-filter one, which the
+# rough panel already carries), and there the step before the thallium
+# stabilization is 'rough'. Those points are drawn hollow: the comparison is
+# still before/after, but not against the same step as the other channels.
+Z_BEFORE_KEYS = ("corrected", "rough")
+Z_BEFORE, Z_AFTER = Z_BEFORE_KEYS[0], "stabilized"
 
 
 # ===========================================================================
@@ -365,18 +374,19 @@ def make_significance_figure(data, channels, args, results):
     """
     fig, ax = new_axes(len(channels), height=5.2)
 
-    good = [(i, z, nu, p) for i, (ch, z, nu, p) in enumerate(results)
+    good = [(i, z, nu, p, bk) for i, (ch, z, nu, p, bk) in enumerate(results)
             if math.isfinite(z)]
     if not good:
-        sys.exit(f"[!] No channel has both '{Z_BEFORE}' and '{Z_AFTER}' with a "
-                 f"usable error: nothing to compare.")
+        sys.exit(f"[!] No channel has both a step before the thallium "
+                 f"stabilization and '{Z_AFTER}' with a usable error: nothing "
+                 f"to compare.")
 
     col_up, col_dn = "#2E9E5B", "#C43D3D"      # improvement / worsening
 
     # Per-channel acceptance band: the t quantile depends on the d.o.f. of that
     # channel's two fits, so the band is a staircase, not a pair of lines.
-    t_crit = [student_interval(nu, args.cl) for _, _, nu, _ in good]
-    xs     = np.array([i for i, _, _, _ in good], float)
+    t_crit = [student_interval(nu, args.cl) for _, _, nu, _, _ in good]
+    xs     = np.array([i for i, _, _, _, _ in good], float)
     edges  = np.concatenate([xs - 0.5, [xs[-1] + 0.5]])
     band   = np.concatenate([t_crit, [t_crit[-1]]])
     ax.fill_between(edges, -band, band, step="post", color="#9AA0A6",
@@ -388,11 +398,18 @@ def make_significance_figure(data, channels, args, results):
 
     ax.axhline(0.0, color="#444444", lw=1.2, zorder=3)
 
-    zs = np.array([z for _, z, _, _ in good])
-    for i, z, nu, p in good:
+    zs       = np.array([z for _, z, _, _, _ in good])
+    fallback = sorted({bk for _, _, _, _, bk in good if bk != Z_BEFORE})
+    for i, z, nu, p, bk in good:
         colour = col_up if z >= 0 else col_dn
-        ax.plot([i], [z], "o", ms=8.5, mfc=colour, mec="white", mew=1.2,
-                zorder=6)
+        # Hollow when the "before" is not the usual step: the point is still a
+        # before/after of the thallium stabilization, but of a shorter chain.
+        if bk == Z_BEFORE:
+            ax.plot([i], [z], "o", ms=8.5, mfc=colour, mec="white", mew=1.2,
+                    zorder=6)
+        else:
+            ax.plot([i], [z], "o", ms=8.5, mfc="white", mec=colour, mew=2.0,
+                    zorder=6)
         # Stem down to zero: it turns a cloud of dots into a per-channel bar of
         # evidence, which is what a significance plot is read for.
         ax.plot([i, i], [0.0, z], "-", color=colour, lw=1.6, alpha=0.55,
@@ -414,7 +431,7 @@ def make_significance_figure(data, channels, args, results):
     ax.set_title("Statistical significance of the resolution change produced by "
                  "the thallium stabilization",
                  fontsize=13.5, fontweight="bold", pad=54)
-    nus = [nu for _, _, nu, _ in good if math.isfinite(nu)]
+    nus = [nu for _, _, nu, _, _ in good if math.isfinite(nu)]
     nu_note = f"$\\nu\\approx${np.median(nus):.0f}" if nus else "Gaussian limit"
     add_subtitle(ax,
                  f"{STEP_LABEL[Z_BEFORE]}  $\\rightarrow$  {STEP_LABEL[Z_AFTER]}"
@@ -432,8 +449,16 @@ def make_significance_figure(data, channels, args, results):
               label=f"not significant at {100*args.cl:.0f} % "
                     f"(Student $t$, {nu_note})"),
     ]
+    for bk in fallback:
+        handles.append(Line2D([], [], color="#555555", marker="o", ms=8,
+                              mfc="white", mec="#555555", mew=2.0, ls="none",
+                              label=f"compared against {STEP_LABEL[bk].lower()}"))
+
+    # An extra entry pushes the legend onto a second row: drop it further so it
+    # does not sit on the x-axis label.
     leg = ax.legend(handles=handles, loc="upper center",
-                    bbox_to_anchor=(0.5, -0.14), ncol=3, frameon=True,
+                    bbox_to_anchor=(0.5, -0.14 - 0.07 * (len(handles) > 3)),
+                    ncol=3, frameon=True,
                     fontsize=10, borderpad=0.7, columnspacing=1.8,
                     handletextpad=0.7)
     leg.get_frame().set_edgecolor("#CCCCCC")
@@ -444,9 +469,21 @@ def make_significance_figure(data, channels, args, results):
 
 
 def compute_significance(data, channels):
-    """[(channel, z, nu, p)] for every channel, in the order given."""
-    before, after = data.get(Z_BEFORE, {}), data.get(Z_AFTER, {})
-    return [(ch, *significance(before.get(ch), after.get(ch))) for ch in channels]
+    """
+    [(channel, z, nu, p, before_key)] for every channel, in the order given.
+    *before_key* is the step the comparison actually used (see Z_BEFORE_KEYS).
+    """
+    after = data.get(Z_AFTER, {})
+    out   = []
+    for ch in channels:
+        for key in Z_BEFORE_KEYS:
+            rec = data.get(key, {}).get(ch)
+            if rec is not None:
+                out.append((ch, *significance(rec, after.get(ch)), key))
+                break
+        else:
+            out.append((ch, float("nan"), float("nan"), float("nan"), None))
+    return out
 
 
 # ===========================================================================
@@ -473,19 +510,22 @@ def print_tables(data, channels, args, results):
                 cells.append(f"{rec['res']:7.3f} +/-   n/a")
         print(f"{ch:>5} | " + " | ".join(f"{c:^18}" for c in cells))
 
-    print(f"\nSignificance of {STEP_LABEL[Z_BEFORE]} -> {STEP_LABEL[Z_AFTER]}")
-    print(f"{'ch':>5} | {'z':>7} | {'nu_eff':>7} | {'p (2-sided)':>12} | verdict")
-    print("-" * 58)
-    for ch, z, nu, p in results:
+    print(f"\nSignificance of the thallium stabilization (-> {STEP_LABEL[Z_AFTER]})")
+    print(f"{'ch':>5} | {'before':^12} | {'z':>7} | {'nu_eff':>7} | "
+          f"{'p (2-sided)':>12} | verdict")
+    print("-" * 74)
+    for ch, z, nu, p, bk in results:
+        name = bk if bk else "-"
         if not math.isfinite(z):
-            print(f"{ch:>5} |     n/a |     n/a |          n/a | no usable error")
+            print(f"{ch:>5} | {name:^12} |     n/a |     n/a |          n/a | "
+                  f"no usable error")
             continue
         t_c = student_interval(nu, args.cl)
         if abs(z) < t_c:
             verdict = "not significant"
         else:
             verdict = "improvement" if z > 0 else "WORSENING"
-        print(f"{ch:>5} | {z:7.2f} | {nu:7.1f} | {p:12.2e} | {verdict}")
+        print(f"{ch:>5} | {name:^12} | {z:7.2f} | {nu:7.1f} | {p:12.2e} | {verdict}")
     print()
 
 

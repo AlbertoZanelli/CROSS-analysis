@@ -54,7 +54,11 @@ catena di ricostruzione dell'ampiezza. Layout **3 righe × N colonne**:
 
 Colonne (chiavi `chain_defs`): `rough` (calibration_rough) · `heater` (stabilization_all) ·
 `corrected` (ampiezza principale) · `stabilized` (ampiezza stabilizzata sul Tl).
-Sui canali in `OPTIMUM_FILTER_CHANNELS` la colonna `heater` **non** viene disegnata.
+Sui canali in `OPTIMUM_FILTER_CHANNELS` restano **solo `rough` e `stabilized`**
+(`OPTIMUM_FILTER_CHAIN_KEYS`): non hanno stabilizzazione heater, e la colonna dell'ampiezza
+principale ripeterebbe la rough — è la stessa ampiezza dell'optimum filter, a una calibrazione di
+distanza. Quei canali non hanno quindi righe `heater`/`corrected` nel CSV dei risultati, e nel plot
+di significatività il "prima" diventa `rough` (punti a marker vuoto, vedi `Z_BEFORE_KEYS`).
 
 La canvas è prodotta **due volte**: `chXX_combined_thallium.jpg` (fondo `pol1`) e
 `chXX_combined_thallium_flatbkg.jpg` (fondo `pol0`).

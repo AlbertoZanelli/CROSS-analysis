@@ -198,6 +198,12 @@ AMP_TREE_DEFAULT        = "corrected_amplitude"
 AMP_TREE_FALLBACK       = "stabilization_all"
 AMP_TREE_OPTIMUM        = "optimumfilter_all"
 OPTIMUM_FILTER_CHANNELS = [25, 59]   # channels using AMP_TREE_OPTIMUM.heat_amplitude
+# Columns of the combined-thallium canvas kept on those channels: they have no
+# heater stabilization, and their main amplitude is the optimum-filter one, which
+# the rough-calibration panel already shows (one calibration apart). What is left
+# is the chain they actually follow: the amplitude, and the same amplitude after
+# the thallium stabilization.
+OPTIMUM_FILTER_CHAIN_KEYS = ("rough", "stabilized")
 
 
 # ===========================================================================
@@ -3129,10 +3135,11 @@ def run_stabilization(
                   else main_tree_name)
     # (key, label, values, x-axis title, colour). The key ties the variable to its
     # per-channel settings (ChainSettings), independently of the column position.
-    # On an OPTIMUM_FILTER_CHANNELS channel the main amplitude IS the optimum-filter
-    # one, so the heater-stabilized column is dropped: it is an earlier step of a
-    # chain that channel does not follow, and it would only add a panel that has
-    # nothing to do with the amplitude actually stabilized.
+    # On an OPTIMUM_FILTER_CHANNELS channel only the rough calibration and the
+    # thallium-stabilized amplitude are kept (OPTIMUM_FILTER_CHAIN_KEYS): the two
+    # heater columns are steps of a chain that channel does not follow, and the
+    # main-amplitude column would repeat the rough one -- it IS the optimum-filter
+    # amplitude, the same quantity the rough panel shows one calibration apart.
     chain_defs = [
         ("rough",      "Calibration rough",   cal_rough,   "Rough amplitude",  ROOT.kAzure + 1),
         ("heater",     "Heater stabilized",   amp_stab,    "Amplitude (a.u.)", ROOT.kGreen + 2),
@@ -3140,7 +3147,7 @@ def run_stabilization(
         ("stabilized", "Thallium stabilized", amp_tl_stab, "Energy (keV)",     ROOT.kRed + 1),
     ]
     if use_optimum_filter:
-        chain_defs = [c for c in chain_defs if c[0] != "heater"]
+        chain_defs = [c for c in chain_defs if c[0] in OPTIMUM_FILTER_CHAIN_KEYS]
 
     # Thallium peak position in ROUGH units, measured where the line dominates
     # (mask_conv = correlation cut + Tl window). Converted with each variable's

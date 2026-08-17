@@ -150,6 +150,7 @@ ANALYSIS_MODE = "mergedrun"     # "mergedrun", "run" or "calibrationrun"
 
 # mergedrun mode: folder containing the input .root files.
 BASE_DIR = "/data/users/azanelli/octopus_work/CROSS/MergedRuns/CorrectedAmp"  # e.g. .../MergedRuns/CorrectedAmps
+BASE_DIR_PERSONAL = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS/MergedRuns/CorrectedAmp"
 
 # run mode: CROSS folder holding the RUNxxxxxx sub-folders, and the run number.
 CROSS_DIR  = "/data/users/azanelli/octopus_work/CROSS-analysis/CROSS"
@@ -374,6 +375,11 @@ PART_GAP_HEIGHT_FRAC = 0.03   # a bin belongs to a GAP when its height is below 
 PART_MIN_BLOCK_FRAC  = 0.15   # blocks below this fraction of the MOST POPULATED block are
                               # absorbed into the nearest (in baseline) block: small isolated
                               # peaks join the closest partition instead of forming their own
+PART_WARM_MIN_COUNTS = 5      # second, LOW threshold (raw counts) used only to recover a
+                              # population the relative one cannot see: a cluster far from the
+                              # main peak is short in BIN HEIGHT but can hold a large share of
+                              # the events. It becomes a partition only if its integral passes
+                              # PART_MIN_BLOCK_FRAC, so strays never do
 
 # --- Thallium-peak search hint (multi-partition) ----------------------------
 # The thallium peak is first located on the COMBINED spectrum (all partitions
@@ -425,6 +431,10 @@ def resolve_scan_dir():
     """
     if ANALYSIS_MODE in ("run", "calibrationrun"):
         return os.path.join(CROSS_DIR, f"RUN{int(RUN_NUMBER):06d}", "Coincidence")
+    
+    if not os.path.isdir(BASE_DIR):
+        return BASE_DIR_PERSONAL
+    
     return BASE_DIR
 
 
@@ -1911,6 +1921,30 @@ def fit_peak_centred(values, mu, tag, interval, cfg, key, background="pol1"):
 # BASELINE PARTITIONING
 # ===========================================================================
 
+def _bin_runs(mask, min_gap):
+    """
+    Runs of True bins in *mask*, as [start, end] pairs (0-based, inclusive),
+    with runs separated by fewer than *min_gap* False bins merged together --
+    the same "a separation must be at least min_gap bins wide" rule the block
+    search uses, so a couple of empty bins inside a population do not split it.
+    """
+    runs = []
+    i, n = 0, len(mask)
+    while i < n:
+        if mask[i]:
+            j = i
+            while j < n and mask[j]:
+                j += 1
+            if runs and (i - runs[-1][1] - 1) < min_gap:
+                runs[-1][1] = j - 1
+            else:
+                runs.append([i, j - 1])
+            i = j
+        else:
+            i += 1
+    return runs
+
+
 def FindBaselinePartitions(baseline_vals, ch_id, enabled=True):
     """
     Split the (correlation-cut) dataset into baseline-based partitions,
@@ -2020,6 +2054,29 @@ def FindBaselinePartitions(baseline_vals, ch_id, enabled=True):
     block_starts = [first] + [g[1] + 1 for g in gaps]
     block_ends   = [g[0] - 1 for g in gaps] + [last]
     blocks       = [[s, e] for s, e in zip(block_starts, block_ends)]
+
+    # --- Recover populations too LOW for the relative threshold -------------
+    # The threshold above is a fraction of the TALLEST bin, and that comparison
+    # is scale-dependent: a narrow, very tall main peak (a quiet channel whose
+    # baseline histogram spans a wide range because of a second level) makes 3 %
+    # of the maximum taller than an ENTIRE secondary population. On ch86 a block
+    # of ~30 % of the events, five units of baseline away, sat below it and was
+    # swallowed by the outer partition.
+    # What makes a population negligible is how many EVENTS it holds, not how
+    # tall its bins are, so the histogram is scanned again with a threshold low
+    # enough to see any real cluster, and a run that does not overlap a block
+    # already found is kept when its integral passes the same PART_MIN_BLOCK_FRAC
+    # test the blocks are judged by. Nothing already found can be lost here: the
+    # step only ADDS blocks.
+    warm = c > PART_WARM_MIN_COUNTS
+    for w_start, w_end in _bin_runs(warm, PART_MIN_GAP_BINS):
+        if any(w_start <= b[1] and b[0] <= w_end for b in blocks):
+            continue                                  # already inside a block
+        if float(c[w_start:w_end + 1].sum()) < PART_MIN_BLOCK_FRAC * max(
+                float(c[b[0]:b[1] + 1].sum()) for b in blocks):
+            continue                                  # negligible: a few strays
+        blocks.append([w_start, w_end])
+    blocks.sort()
 
     # --- Absorb small isolated blocks into the nearest one ------------------
     # A block is "major" when it holds at least PART_MIN_BLOCK_FRAC of the most
@@ -3728,9 +3785,12 @@ def run_stabilization(
                               1200, 450 * n_part_pads)
         c_part.Divide(1, n_part_pads)
 
-        # All partition boundaries (valleys + outer bounds), de-duplicated.
+        # Only the INTERNAL boundaries are drawn (the valleys between partitions):
+        # the outer bounds are the data extremes, not separations, and since the
+        # view is clipped to the robust range they would be drawn outside the
+        # frame -- a stray dashed line across the title.
         boundary_vals = sorted({b for iv in partition_intervals for b in iv
-                                if np.isfinite(b)})
+                                if np.isfinite(b)})[1:-1]
 
         # pad 1 : baseline histogram + peak markers + partition boundaries
         c_part.cd(1); ROOT.gPad.SetGrid()
@@ -3749,10 +3809,22 @@ def run_stabilization(
                 m.SetMarkerColor(ROOT.kGreen + 2); m.SetMarkerSize(1.6)
                 m.Draw("same"); global_lines.append(m)
 
+        # Baseline range SHOWN in the scatters: the one the partition histogram
+        # uses (1st-99th percentile, padded). A handful of far outliers -- a
+        # baseline of -3952 on ch86 -- otherwise stretches the axis over four
+        # decades and squeezes every real event onto a single vertical line.
+        # The three pads then share the same baseline range and line up.
+        base_view = ((h_base_part.GetXaxis().GetXmin(),
+                      h_base_part.GetXaxis().GetXmax())
+                     if h_base_part is not None else None)
+
         # pad 2 : amplitude-vs-baseline scatter + partition boundaries
         c_part.cd(2); ROOT.gPad.SetGrid()
         g_base_part.SetMarkerStyle(20); g_base_part.SetMarkerSize(0.4)
-        g_base_part.SetMarkerColor(ROOT.kBlue); g_base_part.Draw("AP"); c_part.Update()
+        g_base_part.SetMarkerColor(ROOT.kBlue); g_base_part.Draw("AP")
+        if base_view is not None:
+            g_base_part.GetXaxis().SetLimits(*base_view)
+        c_part.Update()
         ymin_s, ymax_s = ROOT.gPad.GetUymin(), ROOT.gPad.GetUymax()
         for bx in boundary_vals:
             l = ROOT.TLine(bx, ymin_s, bx, ymax_s)
@@ -3763,7 +3835,11 @@ def run_stabilization(
         if g_base_time is not None:
             c_part.cd(3); ROOT.gPad.SetGrid()
             g_base_time.SetMarkerStyle(20); g_base_time.SetMarkerSize(0.4)
-            g_base_time.SetMarkerColor(ROOT.kBlue); g_base_time.Draw("AP"); c_part.Update()
+            g_base_time.SetMarkerColor(ROOT.kBlue); g_base_time.Draw("AP")
+            if base_view is not None:            # baseline is the Y axis here
+                g_base_time.GetHistogram().SetMinimum(base_view[0])
+                g_base_time.GetHistogram().SetMaximum(base_view[1])
+            c_part.Update()
             xmin_t, xmax_t = ROOT.gPad.GetUxmin(), ROOT.gPad.GetUxmax()
             for by in boundary_vals:
                 l = ROOT.TLine(xmin_t, by, xmax_t, by)

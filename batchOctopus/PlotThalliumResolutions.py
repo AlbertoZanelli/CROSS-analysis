@@ -50,8 +50,8 @@
      python PlotThalliumResolutions.py --channels 26 27 57 58
      python PlotThalliumResolutions.py --csv /path/to/thallium_resolutions.csv
 
- The figures are written next to the CSV as .pdf (vector, for the thesis) and
- .png (300 dpi, for slides), unless --out says otherwise.
+ The figures are written next to the CSV as .png (300 dpi), unless --out says
+ otherwise.
 ===============================================================================
 """
 
@@ -79,6 +79,13 @@ DEFAULT_CSV = os.path.normpath(os.path.join(
     "thallium_resolutions.csv"))
 
 TARGET_ENERGY = 2614.511      # keV, the line the energy row is rescaled to
+
+# Channels to leave out of BOTH figures -- e.g. a channel whose fits are known
+# to be meaningless. Put the channel numbers here, as integers:
+#     EXCLUDE_CHANNELS = [29, 55]
+# They are dropped whatever else is asked for (--channels included), and the
+# ones actually dropped are printed when the program runs.
+EXCLUDE_CHANNELS = []
 
 # Steps of the analysis, in order, with the name shown in the legend, the colour
 # and the marker. The keys are the ones ThalliumStabilization.py writes in the
@@ -301,12 +308,10 @@ def add_subtitle(ax, *lines):
 
 
 def save(fig, base, quiet=False):
-    base = os.path.splitext(base)[0]
-    for ext, kw in ((".pdf", {}), (".png", dict(dpi=300))):
-        fig.savefig(base + ext, bbox_inches="tight",
-                    facecolor=fig.get_facecolor(), **kw)
-        if not quiet:
-            print(f">>> Saved {base + ext}")
+    out = os.path.splitext(base)[0] + ".png"
+    fig.savefig(out, bbox_inches="tight", facecolor=fig.get_facecolor(), dpi=300)
+    if not quiet:
+        print(f">>> Saved {out}")
     plt.close(fig)
 
 
@@ -642,6 +647,17 @@ def main():
         channels = [c for c in channels if c in set(args.channels)]
         if not channels:
             sys.exit("[!] None of the requested channels is in the table.")
+
+    # Channels left out of BOTH figures (see EXCLUDE_CHANNELS). Applied last, so
+    # it holds whatever else was asked for, and reported: a channel missing from
+    # a thesis figure must never be missing silently.
+    if EXCLUDE_CHANNELS:
+        dropped  = [c for c in channels if c in set(EXCLUDE_CHANNELS)]
+        channels = [c for c in channels if c not in set(EXCLUDE_CHANNELS)]
+        if dropped:
+            print(">>> Excluded channel(s): " + ", ".join(str(c) for c in dropped))
+        if not channels:
+            sys.exit("[!] EXCLUDE_CHANNELS leaves no channel to plot.")
 
     out_dir = os.path.dirname(os.path.abspath(args.csv))
     tag     = f"{args.row}_{args.background}"

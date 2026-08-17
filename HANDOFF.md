@@ -86,6 +86,11 @@ figure in PDF+PNG, tutto in inglese:
    **I due fit usano gli stessi eventi**, quindi la somma in quadratura sovrastima l'errore della
    differenza: z è conservativo.
 
+Il lettore del CSV segnala i **marcatori di conflitto git** (il file dei risultati viene scritto sia
+sul cluster sia in locale, e un merge non risolto lascia dentro *entrambi* i lati) e, se lo stesso
+pannello compare più volte, tiene quello con la `date` più recente — così la figura non dipende
+dall'ordine delle righe. Gli avvisi vanno su stderr: se compaiono, sistemare il CSV.
+
 ---
 
 ## 2. Stato attuale — come si determina la finestra di fit
@@ -165,6 +170,26 @@ riempite con i default del programma (le righe tarate a mano restano tali).
   segno tipico di un intervallo di σ che ammette sia lo spike sia la riga vera; ora entrambe 1.31 ± 0.24 %).
 
 ---
+
+### Partizioni di baseline: popolazioni basse ma non trascurabili
+
+La soglia `PART_GAP_HEIGHT_FRAC` (3 % del bin più alto) è **dipendente dalla scala**: se il picco
+principale è stretto e altissimo e l'istogramma è largo — perché esiste un secondo livello di
+baseline — il 3 % del massimo supera l'intera popolazione secondaria. Su **ch86** una popolazione a
+baseline −6…−3 che contiene il **30 % degli eventi** (1053 dei 1310 eventi di tallio) finiva
+inglobata nella partizione esterna: una sola partizione `[-3952, 1.25]`.
+
+Correzione: dopo la ricerca a soglia relativa, l'istogramma viene riletto con una soglia **bassa e
+assoluta** (`PART_WARM_MIN_COUNTS = 5`) e un gruppo che non si sovrappone a un blocco già trovato
+diventa partizione **solo se il suo integrale** passa lo stesso test `PART_MIN_BLOCK_FRAC` usato per
+gli altri blocchi. Ciò che rende trascurabile una popolazione è quanti **eventi** contiene, non
+quanto sono alti i suoi bin. Il passo è puramente additivo: non può togliere separazioni esistenti —
+verificato, ch26/27/57/58/60 danno partizioni identiche al bit, ch86 passa a 2 partizioni con
+confine a −1.71.
+
+Nella canvas delle partizioni i pad 2 e 3 usano ora lo **stesso range robusto** del pad 1
+(1°–99° percentile), invece di autoscalare sugli outlier (ch86 aveva un evento a baseline −3952 che
+schiacciava tutto su una riga verticale), e vengono disegnati solo i confini **interni**.
 
 ## 4. Cosa ha funzionato
 

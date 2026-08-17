@@ -1130,7 +1130,7 @@ def AnalyzeHeaterCorrThreshold(heater_corrs, ch_id, fallback):
     fixed CORR_VALID_MIN. Heater (pulser) events cluster at very high, stable
     correlation; the returned value sits just above that cluster.
 
-    Procedure (heater events only, taken RAW: IsHeater==1, corr>HEATER_CORR_MIN):
+    Procedure (heater events only, taken RAW: heater flag == 1, corr>HEATER_CORR_MIN):
       - histogram the heater-event correlations;
       - locate the RIGHTMOST peak (TSpectrum, else the tallest bin);
       - Gaussian-fit it and return  mean + HEATER_CORR_NSIGMA*sigma;
@@ -2582,7 +2582,7 @@ def run_stabilization(
     tree_corr = file.Get("correlation_corr")
     tree_ly   = file.Get("LY")
     tree_time = file.Get("timestamp")   # heat_timefromstartrun (baseline-vs-time plot)
-    tree_heater = file.Get("flagpropagator_heater")   # IsHeater flag (pulser events)
+    tree_heater = file.Get("flagpropagator_heater")   # heater flag (pulser events)
     # Optimum-filter tree, also used to compute the LY when the 'LY' tree is gone.
     tree_opt  = tree_main if main_tree_name == AMP_TREE_OPTIMUM else file.Get(AMP_TREE_OPTIMUM)
     # Heater-stabilized amplitude tree: one more step of the processing chain,
@@ -2630,7 +2630,12 @@ def run_stabilization(
     has_time = time_leaf is not None
     has_heat_badinterval = bool(tree_for_stabilization.GetLeaf("heat_badinterval"))
     has_heat_issignal    = bool(tree_for_stabilization.GetLeaf("heat_issignal"))
-    has_heater_flag      = bool(tree_for_stabilization.GetLeaf("IsHeater"))
+    # Leaf flagging the heater (pulser) events, on the 'flagpropagator_heater'
+    # tree: named "IsHeater" or "heat_IsHeater" depending on the production, so
+    # whichever the file has is taken (GetLeaf searches the friend trees too).
+    heater_flag_leaf     = next((lf for lf in ("IsHeater", "heat_IsHeater")
+                                 if tree_for_stabilization.GetLeaf(lf)), None)
+    has_heater_flag      = heater_flag_leaf is not None
     cal_tree_name        = tree_cal.GetName()
     ly_tree_name         = tree_ly.GetName() if _valid_tree(tree_ly) else None
 
@@ -2770,12 +2775,12 @@ def run_stabilization(
     # Lower edge of the interval over which the correlation-cut percentile is
     # taken. Instead of the fixed CORR_VALID_MIN, use the correlation value just
     # ABOVE the heater (pulser) events (mean + 5*sigma of their correlation
-    # peak). Heater events are read RAW here (IsHeater==1, corr>HEATER_CORR_MIN,
+    # peak). Heater events are read RAW here (heater flag == 1, corr>HEATER_CORR_MIN,
     # NO quality filters), independent of the main-event selection. Falls back to
     # CORR_VALID_MIN when the heater flag is absent or the fit is unreliable.
     if has_heater_flag:
         _hd = (ROOT.RDataFrame(tree_for_stabilization)
-               .Filter("IsHeater == 1")
+               .Filter(f"{heater_flag_leaf} == 1")
                .AsNumpy(["heat_correlation", "heat_amplitude"]))
         heater_corrs = np.asarray(_hd["heat_correlation"], np.float64)
         heater_amps  = np.asarray(_hd["heat_amplitude"],   np.float64)
@@ -2785,8 +2790,8 @@ def run_stabilization(
         corr_valid_min_eff, h_corr_heater, fit_corr_heater = CORR_VALID_MIN, None, None
         heater_corrs = np.empty(0, np.float64)
         heater_amps  = np.empty(0, np.float64)
-        print(f">>> Ch {ch_id}: no 'IsHeater' flag; correlation interval lower bound "
-              f"= CORR_VALID_MIN = {CORR_VALID_MIN:.6f}.")
+        print(f">>> Ch {ch_id}: no 'IsHeater'/'heat_IsHeater' flag; correlation "
+              f"interval lower bound = CORR_VALID_MIN = {CORR_VALID_MIN:.6f}.")
 
     # ======================================================================
     # DYNAMIC CORRELATION CUT  (vectorised)

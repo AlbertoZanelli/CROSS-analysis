@@ -127,6 +127,13 @@ Fit `gaus(0) + pol1(3)` (o `pol0`), likelihood poissoniana `"Q0 R L"`, con vinco
 
 ---
 
+### Flag degli eventi heater
+
+Si chiama `IsHeater` o `heat_IsHeater` a seconda della produzione: `heater_flag_leaf` in
+`run_stabilization` prende **quello che il file ha** (`GetLeaf` cerca anche negli alberi amici) e da
+lì lo usa il filtro `RDataFrame`. Per aggiungere un terzo nome, la tupla è su quella riga. Se non c'è
+nessuno dei due, l'analisi degli heater viene saltata e si usa `CORR_VALID_MIN`, come prima.
+
 ## 3. Impostazioni per canale — `chain_settings.csv`
 
 ```

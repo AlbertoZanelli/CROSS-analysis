@@ -149,7 +149,7 @@ GLOBAL_KEEPALIVE = []
 ANALYSIS_MODE = "mergedrun"     # "mergedrun", "run" or "calibrationrun"
 
 # mergedrun mode: folder containing the input .root files.
-BASE_DIR = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS/MergedRuns/CorrectedAmp"  # e.g. .../MergedRuns/CorrectedAmps
+BASE_DIR = "/data/users/azanelli/octopus_work/CROSS/MergedRuns/CorrectedAmp"  # e.g. .../MergedRuns/CorrectedAmps
 
 # run mode: CROSS folder holding the RUNxxxxxx sub-folders, and the run number.
 CROSS_DIR  = "/data/users/azanelli/octopus_work/CROSS-analysis/CROSS"
@@ -394,7 +394,7 @@ PEAK_SIGNIF_MIN         = 3.0
 # Fewer clean events than this in a partition: no local line is fitted, the
 # partition inherits the nearest fitted one (a Gaussian and a linear fit need a
 # handful of points to mean anything, and zero points cannot even be histogrammed).
-PART_MIN_CLEAN_EVENTS   = 5
+PART_MIN_CLEAN_EVENTS   = 2
 
 # --- PREVIOUS VERSION (kept for easy rollback) ------------------------------
 # The half-width was the LARGER of a sigma-based and a range-based estimate, so

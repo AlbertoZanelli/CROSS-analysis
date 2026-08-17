@@ -160,7 +160,9 @@ RUN_NUMBER = 96                 # e.g. 96 -> folder RUN000096, sub-folder Coinci
 #   [N]         -> single channel; GUI if GUI_MANUAL_CUTS is True.
 #   [N, M, ...] -> several channels, always batch.
 # Command-line channels (if given) OVERRIDE this list.
-CHANNELS_TO_PROCESS = [25, 26, 27, 28, 29, 30, 55, 56, 57, 58, 59, 60] 
+CHANNELS_TO_PROCESS = [19, 20, 21, 22, 23, 24, 49, 50, 51, 52, 53, 54, 85, 86, 87, 88, 89, 90, 61, 62, 63, 64, 65, 66]
+
+#[25, 26, 27, 28, 29, 30, 55, 56, 57, 58, 59, 60] 
 
 # --- Output / GUI switches --------------------------------------------------
 SAVE_SUMMARY_JPEG   = True    # per-channel debug JPEGs (global, partitions, before/after)
@@ -197,7 +199,7 @@ STAB_LINES_TREE_NAME     = "stabilization_lines"
 AMP_TREE_DEFAULT        = "corrected_amplitude"
 AMP_TREE_FALLBACK       = "stabilization_all"
 AMP_TREE_OPTIMUM        = "optimumfilter_all"
-OPTIMUM_FILTER_CHANNELS = [25, 59]   # channels using AMP_TREE_OPTIMUM.heat_amplitude
+OPTIMUM_FILTER_CHANNELS = [25, 53, 59, 66]   # channels using AMP_TREE_OPTIMUM.heat_amplitude
 # Columns of the combined-thallium canvas kept on those channels: they have no
 # heater stabilization, and their main amplitude is the optimum-filter one, which
 # the rough-calibration panel already shows (one calibration apart). What is left

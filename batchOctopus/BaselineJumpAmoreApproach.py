@@ -73,7 +73,7 @@ DEBUG_PLOT          = True
 PLOT_THIN           = 5
 
 # Channel filtering (il canale si legge dal nome file)
-CHANNELS_TO_PROCESS = []    # se NON vuota: processa SOLO questi canali (es. [25, 73])
+CHANNELS_TO_PROCESS = [86]    # se NON vuota: processa SOLO questi canali (es. [25, 73])
 SKIP_CHANNELS       = [25, 53, 59, 66, 26, 27, 28, 29, 30, 55, 56, 57, 58, 60]
 RMS = 0
 

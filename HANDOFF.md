@@ -86,6 +86,11 @@ figure in PDF+PNG, tutto in inglese:
    **I due fit usano gli stessi eventi**, quindi la somma in quadratura sovrastima l'errore della
    differenza: z è conservativo.
 
+Il lettore del CSV segnala i **marcatori di conflitto git** (il file dei risultati viene scritto sia
+sul cluster sia in locale, e un merge non risolto lascia dentro *entrambi* i lati) e, se lo stesso
+pannello compare più volte, tiene quello con la `date` più recente — così la figura non dipende
+dall'ordine delle righe. Gli avvisi vanno su stderr: se compaiono, sistemare il CSV.
+
 ---
 
 ## 2. Stato attuale — come si determina la finestra di fit

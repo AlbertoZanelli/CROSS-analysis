@@ -83,12 +83,17 @@ TARGET_ENERGY = 2614.511      # keV, the line the energy row is rescaled to
 # Steps of the analysis, in order, with the name shown in the legend, the colour
 # and the marker. The keys are the ones ThalliumStabilization.py writes in the
 # "variable" column of the results table.
+# Saturated colours, all dark enough to read on white at a glance and to survive
+# a figure printed at half size: with a whole detector on the x axis the markers
+# are small, and a pale colour (the old grey of the second heater step) simply
+# disappears. Distinct hues rather than shades of one, so the four steps are told
+# apart by colour alone, before the marker shape is even visible.
 STEPS = [
     # key            legend label                          colour     marker
-    ("rough",      "Optimum filter amplitude",           "#3F7FBF", "o"),
-    ("heater",     "After first heater stabilization",   "#2E9E5B", "s"),
-    ("corrected",  "After second heater stabilization",  "#8C8C8C", "^"),
-    ("stabilized", "After thallium stabilization",       "#C43D3D", "D"),
+    ("rough",      "Optimum filter amplitude",           "#1A5FA8", "o"),
+    ("heater",     "After first heater stabilization",   "#12855F", "s"),
+    ("corrected",  "After second heater stabilization",  "#D9720B", "^"),
+    ("stabilized", "After thallium stabilization",       "#C1272D", "D"),
 ]
 STEP_LABEL = {k: lab for k, lab, _, _ in STEPS}
 
@@ -127,22 +132,47 @@ def read_rows(path, row_kind, background):
         sys.exit(f"[!] Results table not found: {path}\n"
                  f"    Run ThalliumStabilization.py first, or pass --csv.")
 
-    data, channels = {}, set()
+    data, channels, seen = {}, set(), {}
+    n_dup, conflicted = 0, False
     with open(path, newline="") as fh:
         for r in csv.DictReader(fh):
+            raw_ch = str(r.get("channel", "")).strip()
+            # A table merged by git can carry conflict markers: they parse as
+            # rows with a nonsense channel, and BOTH sides of the merge are then
+            # in the file. Say so instead of quietly plotting one of the two.
+            if raw_ch.startswith(("<<<<<<<", "=======", ">>>>>>>")):
+                conflicted = True
+                continue
             if r.get("row") != row_kind or r.get("background") != background:
                 continue
             try:
-                ch = int(str(r["channel"]).strip())
-            except (KeyError, TypeError, ValueError):
+                ch = int(raw_ch)
+            except (TypeError, ValueError):
                 continue
             res = to_float(r.get("resolution_pct"))
             if not math.isfinite(res):
                 continue
+            # Same panel written twice (a re-analysis merged in, or the two sides
+            # of a conflict): keep the most recent fit, so the figure does not
+            # depend on the order of the lines.
+            key, stamp = (r.get("variable"), ch), str(r.get("date", ""))
+            if key in seen:
+                n_dup += 1
+                if stamp < seen[key]:
+                    continue
+            seen[key] = stamp
             data.setdefault(r.get("variable"), {})[ch] = dict(
                 res=res, err=to_float(r.get("resolution_err_pct")),
                 ndf=to_float(r.get("ndf")), n_peak=to_float(r.get("n_peak")))
             channels.add(ch)
+
+    if conflicted:
+        print(f"[!] {os.path.basename(path)} contains git conflict markers: it "
+              f"holds BOTH sides of a merge. Resolve it before trusting the "
+              f"figures.", file=sys.stderr)
+    if n_dup:
+        print(f"[!] {n_dup} duplicate panel(s) in {os.path.basename(path)}; the "
+              f"most recent 'date' was used for each.", file=sys.stderr)
 
     if not channels:
         sys.exit(f"[!] No row with row='{row_kind}' and background='{background}' "
@@ -221,16 +251,23 @@ def significance(before, after):
 # ===========================================================================
 
 def new_axes(n_ch, height=5.6):
-    """A figure sized for *n_ch* channels, with the shared look of both plots."""
-    width = min(max(6.5 + 0.55 * n_ch, 8.0), 22.0)
+    """
+    A figure sized for *n_ch* channels, with the shared look of both plots.
+
+    All the steps of a channel share one x position, so the width only has to
+    give each CHANNEL room (~0.3 in), not each point: a whole detector fits in a
+    figure that still reads when dropped on a thesis page, instead of a metres-
+    wide strip that has to be shrunk until the labels vanish.
+    """
+    width = min(max(4.5 + 0.30 * n_ch, 8.0), 15.0)
     fig, ax = plt.subplots(figsize=(width, height))
     fig.patch.set_facecolor("white")
-    ax.set_facecolor("#FCFCFD")
-    # Alternate channel slots with a very light band: it groups what belongs to
-    # one channel without adding a single line to the foreground.
+    ax.set_facecolor("white")
+    # Alternate channel slots: with 30+ columns this is what keeps the eye on the
+    # right channel, so it has to be visible -- the old 3.5 % grey was not.
     for i in range(n_ch):
         if i % 2 == 0:
-            ax.axvspan(i - 0.5, i + 0.5, color="#000000", alpha=0.035, lw=0,
+            ax.axvspan(i - 0.5, i + 0.5, color="#4A5568", alpha=0.07, lw=0,
                        zorder=0)
     return fig, ax
 
@@ -238,18 +275,23 @@ def new_axes(n_ch, height=5.6):
 def finish_axes(ax, channels, xlabel="Channel"):
     """Ticks, grid and spines, once the data are drawn."""
     n_ch = len(channels)
+    labels = [str(c) for c in channels]
+    # Channel numbers are two digits: they fit horizontally even for a full
+    # detector, and horizontal labels are read at a glance. Rotate only when
+    # they would actually collide.
+    rot = 90 if (n_ch > 45 or max(len(l) for l in labels) > 3 and n_ch > 20) else 0
     ax.set_xticks(np.arange(n_ch))
-    ax.set_xticklabels([str(c) for c in channels], fontsize=10.5,
-                       rotation=(90 if n_ch > 24 else (45 if n_ch > 14 else 0)))
+    ax.set_xticklabels(labels, fontsize=10.5 if n_ch <= 20 else 9.5, rotation=rot)
     ax.set_xlim(-0.5, n_ch - 0.5)
-    ax.set_xlabel(xlabel, fontsize=12, labelpad=8)
-    ax.grid(axis="y", ls=":", lw=0.8, color="#8A8A8A", alpha=0.55, zorder=0)
+    ax.set_xlabel(xlabel, fontsize=12.5, labelpad=8)
+    ax.grid(axis="y", ls="-", lw=0.7, color="#B8BCC4", alpha=0.9, zorder=0)
     ax.set_axisbelow(True)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     for side in ("left", "bottom"):
-        ax.spines[side].set_color("#666666")
-    ax.tick_params(axis="both", which="both", color="#666666", labelsize=10)
+        ax.spines[side].set_color("#3A3A3A")
+        ax.spines[side].set_linewidth(1.1)
+    ax.tick_params(axis="both", which="both", color="#3A3A3A", labelsize=10.5)
 
 
 def add_subtitle(ax, *lines):
@@ -278,11 +320,14 @@ def make_resolution_figure(data, channels, args):
         sys.exit(f"[!] None of the requested steps is in the table: "
                  f"{', '.join(args.steps)}")
 
-    fig, ax = new_axes(len(channels))
-    x = np.arange(len(channels), dtype=float)
     n_ch = len(channels)
-    m_big = 8.0 if n_ch <= 10 else 6.0
-    m_std = 6.0 if n_ch <= 10 else 4.5
+    # A wide axis needs a little more height, or the frame turns into a strip.
+    fig, ax = new_axes(n_ch, height=5.6 if n_ch <= 24 else 6.2)
+    x = np.arange(n_ch, dtype=float)
+    # Markers stay readable down to a full detector: they never overlap
+    # horizontally (one x per channel), so only the vertical crowding matters.
+    m_big = 8.0 if n_ch <= 10 else (7.0 if n_ch <= 24 else 6.0)
+    m_std = 6.5 if n_ch <= 10 else (5.5 if n_ch <= 24 else 5.0)
 
     handles, any_missing_err = [], False
 
@@ -301,39 +346,50 @@ def make_resolution_figure(data, channels, args):
                 xs_ne.append(x[j]); ys_ne.append(rec["res"])
 
         size   = m_big if last else m_std
-        # All the steps of a channel share one vertical line, so the bars are
-        # kept thin and slightly transparent: they cross each other by design.
-        alpha  = 1.0 if last else 0.8
         zorder = 6 if last else 4
-
+        # A white rim around every marker: the steps of a channel sit on ONE
+        # vertical line and routinely overlap, and without the rim they merge
+        # into a single blob at detector scale. No transparency -- a washed-out
+        # colour is exactly what made the old figure need zooming.
         if xs:
             ax.errorbar(xs, ys, yerr=es, fmt=marker, ms=size, mfc=colour,
-                        mec="white" if last else colour,
-                        mew=1.1 if last else 0.6, ecolor=colour,
-                        elinewidth=1.4 if last else 1.0,
-                        capsize=3.0 if last else 2.2,
-                        capthick=1.2 if last else 0.9,
-                        ls="none", alpha=alpha, zorder=zorder)
+                        mec="white", mew=1.0 if last else 0.8, ecolor=colour,
+                        elinewidth=1.5 if last else 1.2,
+                        capsize=2.5 if n_ch <= 24 else 0.0, capthick=1.1,
+                        ls="none", zorder=zorder)
         if xs_ne:
             any_missing_err = True
-            ax.plot(xs_ne, ys_ne, marker, ms=size, mfc="none", mec=colour,
-                    mew=1.4, ls="none", alpha=alpha, zorder=zorder)
+            ax.plot(xs_ne, ys_ne, marker, ms=size, mfc="white", mec=colour,
+                    mew=1.6, ls="none", zorder=zorder)
 
-        handles.append(Line2D([], [], color=colour, marker=marker, ms=size,
-                              mfc=colour, mec=colour, ls="none", label=label))
+        handles.append(Line2D([], [], color=colour, marker=marker, ms=size + 1,
+                              mfc=colour, mec="white", mew=0.8, ls="none",
+                              label=label))
 
     if any_missing_err:
-        handles.append(Line2D([], [], color="#555555", marker="o", ms=m_std,
-                              mfc="none", mec="#555555", mew=1.4, ls="none",
+        handles.append(Line2D([], [], color="#444444", marker="o", ms=m_std + 1,
+                              mfc="white", mec="#444444", mew=1.6, ls="none",
                               label="fit error not available"))
 
-    ax.set_ylabel("Resolution  FWHM/$\\mu$  [%]", fontsize=12, labelpad=8)
+    ax.set_ylabel("Resolution  FWHM/$\\mu$  [%]", fontsize=12.5, labelpad=8)
     if args.logy:
         ax.set_yscale("log")
     else:
-        ax.set_ylim(bottom=0)
+        ax.set_ylim(bottom=0, top=(args.ymax if args.ymax else None))
         ax.yaxis.set_minor_locator(AutoMinorLocator(2))
     finish_axes(ax, channels)
+
+    # A point pushed off the top by --ymax is marked at the edge, never dropped
+    # without trace: an off-scale channel is exactly the one worth noticing.
+    if args.ymax:
+        for key, _, colour, marker in steps:
+            for j, ch in enumerate(channels):
+                rec = data.get(key, {}).get(ch)
+                if rec is not None and rec["res"] > args.ymax:
+                    # CARETUP, not the filled triangle: that one is already the
+                    # marker of the second heater step.
+                    ax.plot([x[j]], [args.ymax], marker=6, ms=9, color=colour,
+                            clip_on=False, zorder=8)
 
     # Right axis: the same numbers as an absolute FWHM. Only meaningful on the
     # energy row, where every peak sits at TARGET_ENERGY by construction.
@@ -352,11 +408,15 @@ def make_resolution_figure(data, channels, args):
                      f"{'energy-rescaled' if args.row == 'energy' else 'native-units'}"
                      f" peak  |  {len(channels)} channels")
 
-    leg = ax.legend(handles=handles, loc="upper center",
-                    bbox_to_anchor=(0.5, -0.14), ncol=2 if len(handles) > 3 else 1,
-                    frameon=True, fontsize=10, borderpad=0.7,
-                    columnspacing=1.8, handletextpad=0.7)
-    leg.get_frame().set_edgecolor("#CCCCCC")
+    # One row of entries when the figure is wide enough for it: the legend is
+    # read once, and a two-row block under a 30-channel axis wastes the space
+    # the channels need.
+    ncol = 4 if fig.get_figwidth() >= 12 else (2 if len(handles) > 3 else 1)
+    leg  = ax.legend(handles=handles, loc="upper center",
+                     bbox_to_anchor=(0.5, -0.13), ncol=ncol,
+                     frameon=True, fontsize=11, borderpad=0.7,
+                     columnspacing=1.6, handletextpad=0.6)
+    leg.get_frame().set_edgecolor("#AAAAAA")
     leg.get_frame().set_facecolor("white")
 
     fig.tight_layout()
@@ -372,7 +432,8 @@ def make_significance_figure(data, channels, args, results):
     z of every channel, with the Student-t "not significant" band. *results* is
     the list of (channel, z, nu, p) already computed by compute_significance.
     """
-    fig, ax = new_axes(len(channels), height=5.2)
+    fig, ax = new_axes(len(channels),
+                       height=5.2 if len(channels) <= 24 else 5.8)
 
     good = [(i, z, nu, p, bk) for i, (ch, z, nu, p, bk) in enumerate(results)
             if math.isfinite(z)]
@@ -381,7 +442,9 @@ def make_significance_figure(data, channels, args, results):
                  f"stabilization and '{Z_AFTER}' with a usable error: nothing "
                  f"to compare.")
 
-    col_up, col_dn = "#2E9E5B", "#C43D3D"      # improvement / worsening
+    col_up, col_dn = "#12855F", "#C1272D"      # improvement / worsening
+    n_ch  = len(channels)
+    m_sig = 8.5 if n_ch <= 10 else (7.5 if n_ch <= 24 else 6.5)
 
     # Per-channel acceptance band: the t quantile depends on the d.o.f. of that
     # channel's two fits, so the band is a staircase, not a pair of lines.
@@ -389,14 +452,13 @@ def make_significance_figure(data, channels, args, results):
     xs     = np.array([i for i, _, _, _, _ in good], float)
     edges  = np.concatenate([xs - 0.5, [xs[-1] + 0.5]])
     band   = np.concatenate([t_crit, [t_crit[-1]]])
-    ax.fill_between(edges, -band, band, step="post", color="#9AA0A6",
-                    alpha=0.16, lw=0, zorder=1)
-    ax.step(edges, band, where="post", color="#9AA0A6", lw=1.0, alpha=0.8,
+    ax.fill_between(edges, -band, band, step="post", color="#7E8794",
+                    alpha=0.22, lw=0, zorder=1)
+    ax.step(edges, band, where="post", color="#5C6470", lw=1.2, zorder=2)
+    ax.step(edges, -np.array(band), where="post", color="#5C6470", lw=1.2,
             zorder=2)
-    ax.step(edges, -np.array(band), where="post", color="#9AA0A6", lw=1.0,
-            alpha=0.8, zorder=2)
 
-    ax.axhline(0.0, color="#444444", lw=1.2, zorder=3)
+    ax.axhline(0.0, color="#2A2A2A", lw=1.4, zorder=3)
 
     zs       = np.array([z for _, z, _, _, _ in good])
     fallback = sorted({bk for _, _, _, _, bk in good if bk != Z_BEFORE})
@@ -405,28 +467,36 @@ def make_significance_figure(data, channels, args, results):
         # Hollow when the "before" is not the usual step: the point is still a
         # before/after of the thallium stabilization, but of a shorter chain.
         if bk == Z_BEFORE:
-            ax.plot([i], [z], "o", ms=8.5, mfc=colour, mec="white", mew=1.2,
+            ax.plot([i], [z], "o", ms=m_sig, mfc=colour, mec="white", mew=1.0,
                     zorder=6)
         else:
-            ax.plot([i], [z], "o", ms=8.5, mfc="white", mec=colour, mew=2.0,
+            ax.plot([i], [z], "o", ms=m_sig, mfc="white", mec=colour, mew=2.0,
                     zorder=6)
         # Stem down to zero: it turns a cloud of dots into a per-channel bar of
-        # evidence, which is what a significance plot is read for.
-        ax.plot([i, i], [0.0, z], "-", color=colour, lw=1.6, alpha=0.55,
-                zorder=4)
+        # evidence, which is what a significance plot is read for. Solid, not
+        # faded: at detector scale the stems ARE the shape of the figure.
+        ax.plot([i, i], [0.0, z], "-", color=colour,
+                lw=2.2 if n_ch <= 24 else 1.8, alpha=0.85, zorder=4)
 
-    ax.set_ylabel("Significance  $z$", fontsize=12, labelpad=8)
-    lim = max(3.0, 1.15 * float(np.abs(zs).max()), 1.15 * max(t_crit))
-    ax.set_ylim(-lim, lim)
+    ax.set_ylabel("Significance  $z$", fontsize=12.5, labelpad=8)
+    # Limits follow the data instead of being mirrored around zero: when almost
+    # every channel improves, a symmetric range spends half the figure on an
+    # empty lower half and squashes the points that carry the message. The
+    # acceptance band is always kept fully visible.
+    ax.set_ylim(min(-1.35 * max(t_crit), 1.15 * float(zs.min())),
+                max( 1.35 * max(t_crit), 1.15 * float(zs.max())))
     ax.yaxis.set_minor_locator(AutoMinorLocator(2))
     finish_axes(ax, channels)
 
     # Which way is up: stated on the plot, not left to the caption.
-    ax.text(0.99, 0.95, "$\\uparrow$ improvement", transform=ax.transAxes,
-            ha="right", va="top", fontsize=10.5, color=col_up, fontweight="bold")
-    ax.text(0.99, 0.05, "$\\downarrow$ worsening", transform=ax.transAxes,
-            ha="right", va="bottom", fontsize=10.5, color=col_dn,
-            fontweight="bold")
+    # On a white patch: the lower one sits on the acceptance band.
+    _bbox = dict(facecolor="white", alpha=0.8, edgecolor="none", pad=2.0)
+    ax.text(0.99, 0.955, "$\\uparrow$ improvement", transform=ax.transAxes,
+            ha="right", va="top", fontsize=11, color=col_up, fontweight="bold",
+            bbox=_bbox, zorder=7)
+    ax.text(0.99, 0.045, "$\\downarrow$ worsening", transform=ax.transAxes,
+            ha="right", va="bottom", fontsize=11, color=col_dn,
+            fontweight="bold", bbox=_bbox, zorder=7)
 
     ax.set_title("Statistical significance of the resolution change produced by "
                  "the thallium stabilization",
@@ -441,10 +511,10 @@ def make_significance_figure(data, channels, args, results):
                  "  |  errors added in quadrature")
 
     handles = [
-        Line2D([], [], color=col_up, marker="o", ms=8, mfc=col_up, mec=col_up,
-               ls="none", label="resolution improved  ($z>0$)"),
-        Line2D([], [], color=col_dn, marker="o", ms=8, mfc=col_dn, mec=col_dn,
-               ls="none", label="resolution worsened  ($z<0$)"),
+        Line2D([], [], color=col_up, marker="o", ms=9, mfc=col_up, mec="white",
+               mew=0.8, ls="none", label="resolution improved  ($z>0$)"),
+        Line2D([], [], color=col_dn, marker="o", ms=9, mfc=col_dn, mec="white",
+               mew=0.8, ls="none", label="resolution worsened  ($z<0$)"),
         Patch(facecolor="#9AA0A6", alpha=0.3,
               label=f"not significant at {100*args.cl:.0f} % "
                     f"(Student $t$, {nu_note})"),
@@ -554,6 +624,11 @@ def main():
                     help="confidence level of the significance band (0.95)")
     ap.add_argument("--logy", action="store_true",
                     help="logarithmic y axis on the resolution figure")
+    ap.add_argument("--ymax", type=float, default=None,
+                    help="upper limit of the resolution axis, in %%. A single "
+                         "bad channel otherwise squashes the whole detector "
+                         "into the bottom of the frame; points above the limit "
+                         "are marked with a triangle at the top edge")
     ap.add_argument("--no-significance", dest="significance",
                     action="store_false",
                     help="only draw the resolution figure")

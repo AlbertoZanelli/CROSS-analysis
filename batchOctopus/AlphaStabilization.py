@@ -146,7 +146,7 @@ GLOBAL_KEEPALIVE = []
 ANALYSIS_MODE = "mergedrun"     # "mergedrun" or "run"
 
 # mergedrun mode: folder containing the input .root files.
-BASE_DIR = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS/MergedRuns/CorrectedAmp"  # e.g. .../MergedRuns/CorrectedAmps
+BASE_DIR = "/data/users/azanelli/octopus_work/CROSS/MergedRuns/CorrectedAmp"  # e.g. .../MergedRuns/CorrectedAmps
 BASE_DIR_PERSONAL = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS/MergedRuns/CorrectedAmp"
 
 # run mode: CROSS folder holding the RUNxxxxxx sub-folders, and the run number.
@@ -158,7 +158,7 @@ RUN_NUMBER = 92                 # e.g. 96 -> folder RUN000096, sub-folder Coinci
 #   [N]         -> single channel; GUI if GUI_MANUAL_CUTS is True.
 #   [N, M, ...] -> several channels, always batch.
 # Command-line channels (if given) OVERRIDE this list.
-CHANNELS_TO_PROCESS = [25, 26, 27, 28, 29, 30, 55, 56, 57, 58, 59, 60] #
+CHANNELS_TO_PROCESS = [19, 20, 21, 22, 23, 24, 49, 50, 51, 52, 53, 54, 85, 86, 87, 88, 89, 90, 61, 62, 63, 64, 65, 66, 25, 26, 27, 28, 29, 30, 55, 56, 57, 58, 59, 60]
 
 # --- Output / GUI switches --------------------------------------------------
 SAVE_SUMMARY_JPEG   = True    # per-channel debug JPEGs (global, partitions, before/after)
@@ -411,7 +411,7 @@ PART_MIN_CLEAN_EVENTS = 2
 #                residuals. Valid range 0.5-1.0 exclusive -- ROOT silently resets
 #                anything >= 1.0 back to 0.5.
 # Set LINE_FIT_METHOD = "theilsen" to go back to the previous behaviour.
-LINE_FIT_METHOD = "rob"
+LINE_FIT_METHOD = "theilsen"
 LINE_FIT_ROB    = 0.85
 
 # --- Thallium-peak search hint (multi-partition) ----------------------------

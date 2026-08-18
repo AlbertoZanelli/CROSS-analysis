@@ -263,7 +263,12 @@ DOUBLET_SEP_TOL = 2.0
 # lower line twice -- on ch57 partition 0 the stabilization then anchored on the
 # alpha peak instead of the alpha+recoil one. Wider bins average that noise away.
 DOUBLET_BIN_DIV = 2.0
-DOUBLET_COARSE_BINS = 60   # bins of the first, exploratory pass (peak search)
+# Bin counts of the exploratory pass, tried IN ORDER until the doublet is
+# resolved. Fewer bins = WIDER bins = more counts per bin, so a weak partner line
+# rises above the noise instead of being rejected as a fluctuation. On ch65 the
+# stabilized spectrum yields only one peak at 60 bins and the fit used to
+# collapse to a single Gaussian (sigma 52, a meaningless 2.28 %).
+DOUBLET_COARSE_BINS = (60, 40, 30, 20, 15)
 
 # --- Thallium cross-check (resolution gain from the ALPHA stabilization) -----
 # A SEPARATE, read-only diagnostic (it does NOT alter the stabilization or the
@@ -359,7 +364,7 @@ ALPHA_RES_CSV_NAME = "alpha_resolutions.csv"
 # peak in the spectrum -- on ch57 that peak is inside the alpha search region
 # and the analysis window used to be built on it. Same recipe as
 # ThalliumStabilization.py (AnalyzeHeaterCorrThreshold).
-CORR_VALID_MIN      = 0.999   # fallback lower bound, when there is no heater
+CORR_VALID_MIN      = 0.9995   # fallback lower bound, when there is no heater
 CORR_CUT_PERCENTILE = 0.10    # dynamic cut at this percentile of valid corr
 
 
@@ -1096,8 +1101,18 @@ def AnalyzeHeaterCorrThreshold(heater_corrs, ch_id, fallback):
                   f"low-count bin at {thr:.6f}.")
     else:
         print(f">>> Ch {ch_id}: heater correlation threshold (mean+{HEATER_CORR_NSIGMA:g}sigma) = "
-              f"{thr:.6f} (mean={mean:.6f}, sigma={sigma:.6f}).")
-    return thr, h, fit
+                          f"{thr:.6f} (mean={mean:.6f}, sigma={sigma:.6f}).")
+        
+        #if thr < 0.999:
+            #print(f">>> Ch {ch_id}: heater correlation threshold (mean+{HEATER_CORR_NSIGMA:g}sigma) = "
+                          #f"0.9995 (mean={mean:.6f}, sigma={sigma:.6f}).")
+            #return 0.9995, h, fit
+        #else:
+            #print(f">>> Ch {ch_id}: heater correlation threshold (mean+{HEATER_CORR_NSIGMA:g}sigma) = "
+                          #f"{thr:.6f} (mean={mean:.6f}, sigma={sigma:.6f}).")
+            #return thr, h, fit
+        
+    
 
 
 def padded_view(x_arr, y_arr, x_pad_frac=0.45, y_pad_frac=0.55):
@@ -1271,19 +1286,49 @@ def doublet_pair(h, search_min=None, search_max=None):
     return (best[1], best[2]) if best else None
 
 
-def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=None):
+def doublet_expected(h, mu_a, mu_r, search_min=None, search_max=None):
+    """
+    The doublet of a spectrum ALREADY IN ENERGY, where the two lines can only be
+    at ALPHA_PARTICLE_ENERGY and TARGET_ENERGY: the candidate CLOSEST to each
+    expected position, instead of the most prominent one and its partner.
+
+    On a channel whose alpha-particle line is broad and degraded the prominence
+    anchor lands inside that blob and finds a continuum structure at the right
+    separation inside it, ignoring the real recoil peak: on ch65 the combined
+    stabilized spectrum was fitted as a pair at 5245 + 5314 keV and reported the
+    ALPHA+RECOIL line at 5313.8 (sigma 70, a meaningless 3.1 %), while the recoil
+    peak sits at 5407 and every per-partition fit found it.
+
+    Returns None when there are no candidates or both lines snap to the same one
+    (the caller then falls back to the prominence search).
+    """
+    cands = [c for c in _peak_candidates(h, search_min, search_max) if c[1] > 0]
+    if not cands:
+        return None
+    x_a = min(cands, key=lambda c: abs(c[0] - mu_a))[0]
+    x_r = min(cands, key=lambda c: abs(c[0] - mu_r))[0]
+    if x_a == x_r:
+        return None
+    return (min(x_a, x_r), max(x_a, x_r))
+
+def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=None,
+                      expect=None):
     """
     Fit the ALPHA DOUBLET (alpha-particle line + alpha+recoil line) with a double
     Gaussian over a linear background, with binning optimized to the peak width.
 
     Strategy (mirrors the thallium peak-finding, extended to two peaks):
-      1. coarse histogram -> locate the two prominent peaks (TSpectrum, by area);
+      1. coarse histogram -> the two peaks: nearest to *expect* when the two
+         positions are known (a spectrum already in energy), else via
+         doublet_pair (physical separation). Retried with progressively WIDER
+         bins until resolved;
       2. preliminary single-Gaussian fit of each peak -> seed widths;
       3. rebuild the histogram with bin width ~ sigma/4 (optimized binning);
       4. joint final fit  gaus(0)+gaus(3)+pol1(6)  seeded from the preliminaries.
 
-    The LOWER peak is the alpha-particle line (the stabilization reference).
-    Falls back to a single Gaussian (mu_r=None) when only one peak is found.
+    The LOWER peak is the alpha-particle line. TWO Gaussians are ALWAYS fitted:
+    where the finder cannot see the partner even at the widest binning, it is
+    seeded at the physical separation.
     Returns an AlphaDoublet. *amps* is the raw-amplitude NumPy array of the events.
     """
     res = AlphaDoublet()
@@ -1298,10 +1343,36 @@ def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=Non
         h.FillN(amps.size, amps.astype(np.double), np.ones(amps.size, np.double))
         return h
 
-    # 1. coarse pass + 2. preliminary single fits
-    h0    = build(DOUBLET_COARSE_BINS)
-    peaks = _two_peaks(h0, search_min, search_max)
+    # 1. coarse pass: progressively WIDER bins until the doublet is resolved.
+    #    The partner is identified by doublet_pair, i.e. by the PHYSICAL
+    #    separation of the two lines, not by its prominence.
+    #    *expect* = (mu_alpha, mu_recoil) on a spectrum already in energy: the
+    #    positions are known, so the peaks are taken nearest to them.
+    h0 = pair = None
+    for nb0 in DOUBLET_COARSE_BINS:
+        h0   = build(nb0)
+        pair = (doublet_expected(h0, expect[0], expect[1], search_min, search_max)
+                if expect is not None else None)
+        if pair is None:
+            pair = doublet_pair(h0, search_min, search_max)
+        if pair is not None:
+            break
 
+    if pair is None:
+        # Even the widest bins show one peak only. The doublet is ALWAYS fitted
+        # with two Gaussians: the separation of the two lines is a physical
+        # constant, so the partner's position is known even where the finder
+        # cannot see it. It goes on the side holding more counts.
+        peak_x, _ = find_dominant_peak(h0, search_min, search_max)
+        ax     = h0.GetXaxis()
+        up, dn = peak_x * (1.0 + DOUBLET_SEP_REL), peak_x * (1.0 - DOUBLET_SEP_REL)
+        pair   = ((peak_x, up)
+                  if h0.GetBinContent(ax.FindBin(up)) >= h0.GetBinContent(ax.FindBin(dn))
+                  else (dn, peak_x))
+        print(f"  [!] {tag}: doublet partner not found; seeded at the physical "
+              f"separation ({100 * DOUBLET_SEP_REL:.2f} %).")
+
+    # 2. preliminary single fits -> seed widths
     def prelim(mu):
         sg0 = (win_hi - win_lo) * 0.02
         g = ROOT.TF1(f"g_{tag}", "gaus", mu - 3 * sg0, mu + 3 * sg0)
@@ -1309,39 +1380,26 @@ def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=Non
         h0.Fit(g, "Q0 R")
         return g.GetParameter(0), g.GetParameter(1), abs(g.GetParameter(2))
 
-    if len(peaks) >= 2:
-        A1, m1, s1 = prelim(peaks[0][0])
-        A2, m2, s2 = prelim(peaks[1][0])
-        sig_ref = max(min(s1, s2), (win_hi - win_lo) * 0.004)
-        nb = int(np.clip(round((win_hi - win_lo) / (sig_ref / DOUBLET_BIN_DIV)), 30, 300))
-        h = build(nb); res.hist = h
-        lo, hi = m1 - 3.5 * s1, m2 + 3.5 * s2
-        ff = ROOT.TF1(tag, "gaus(0)+gaus(3)+pol1(6)", lo, hi)
-        ff.SetParameters(A1, m1, s1, A2, m2, s2,
-                         h.GetBinContent(h.GetXaxis().FindBin(lo)), 0.0)
-        ff.SetParLimits(2, s1 * 0.3, s1 * 3.0)
-        ff.SetParLimits(5, s2 * 0.3, s2 * 3.0)
-        h.Fit(ff, "Q0 R")
-        res.fit = ff
-        res.mu_a, res.sig_a = ff.GetParameter(1), abs(ff.GetParameter(2))
-        res.mu_r, res.sig_r = ff.GetParameter(4), abs(ff.GetParameter(5))
-        res.mu_a_err, res.sig_a_err = ff.GetParError(1), ff.GetParError(2)
-        res.mu_r_err, res.sig_r_err = ff.GetParError(4), ff.GetParError(5)
-        res.ok = True
-    else:
-        # Single-peak fallback: dominant peak only.
-        peak_x, peak_y = find_dominant_peak(h0, search_min, search_max)
-        A1, m1, s1 = prelim(peak_x)
-        sig_ref = max(s1, (win_hi - win_lo) * 0.004)
-        nb = int(np.clip(round((win_hi - win_lo) / (sig_ref / DOUBLET_BIN_DIV)), 30, 300))
-        h = build(nb); res.hist = h
-        ff = ROOT.TF1(tag, "gaus", m1 - 4 * s1, m1 + 4 * s1)
-        ff.SetParameters(A1, m1, s1)
-        h.Fit(ff, "Q0 R")
-        res.fit = ff
-        res.mu_a, res.sig_a = ff.GetParameter(1), abs(ff.GetParameter(2))
-        res.mu_a_err, res.sig_a_err = ff.GetParError(1), ff.GetParError(2)
-        res.ok = True
+    A1, m1, s1 = prelim(pair[0])
+    A2, m2, s2 = prelim(pair[1])
+
+    # 3. rebuild at bin width ~ sigma / DOUBLET_BIN_DIV  4. joint final fit
+    sig_ref = max(min(s1, s2), (win_hi - win_lo) * 0.004)
+    nb = int(np.clip(round((win_hi - win_lo) / (sig_ref / DOUBLET_BIN_DIV)), 30, 300))
+    h = build(nb); res.hist = h
+    lo, hi = m1 - 3.5 * s1, m2 + 3.5 * s2
+    ff = ROOT.TF1(tag, "gaus(0)+gaus(3)+pol1(6)", lo, hi)
+    ff.SetParameters(A1, m1, s1, A2, m2, s2,
+                     h.GetBinContent(h.GetXaxis().FindBin(lo)), 0.0)
+    ff.SetParLimits(2, s1 * 0.3, s1 * 3.0)
+    ff.SetParLimits(5, s2 * 0.3, s2 * 3.0)
+    h.Fit(ff, "Q0 R")
+    res.fit = ff
+    res.mu_a, res.sig_a = ff.GetParameter(1), abs(ff.GetParameter(2))
+    res.mu_r, res.sig_r = ff.GetParameter(4), abs(ff.GetParameter(5))
+    res.mu_a_err, res.sig_a_err = ff.GetParError(1), ff.GetParError(2)
+    res.mu_r_err, res.sig_r_err = ff.GetParError(4), ff.GetParError(5)
+    res.ok = True
 
     if res.sig_a <= 0:
         res.mu_a, res.sig_a = float(np.median(amps)), float(np.std(amps)) or 1.0
@@ -3829,7 +3887,8 @@ def run_stabilization(
             mu_ref = float(np.median(r.all_amps))
         before_e = TARGET_ENERGY * r.all_amps / mu_ref
         _, lo, hi = calcRobustLimitsAndBins(before_e.tolist())
-        r.doublet_before = fit_alpha_doublet(before_e, lo, hi, f"pdbbef_{ch_id}_{r.idx}")
+        r.doublet_before = fit_alpha_doublet(before_e, lo, hi, f"pdbbef_{ch_id}_{r.idx}",
+                                             expect=(ALPHA_PARTICLE_ENERGY, TARGET_ENERGY))
         r.doublet_before.hist.SetTitle(
             f"Ch {ch_id} P{r.idx}: Alpha doublet BEFORE stab. (rescaled);Energy (keV);Counts")
         if not (r.q_0 == 0.0 and r.slope == 0.0):
@@ -3838,7 +3897,8 @@ def run_stabilization(
             after_e = after_e[np.isfinite(after_e)]
             if after_e.size > 0:
                 _, lo, hi = calcRobustLimitsAndBins(after_e.tolist())
-                r.doublet_after = fit_alpha_doublet(after_e, lo, hi, f"pdbaft_{ch_id}_{r.idx}")
+                r.doublet_after = fit_alpha_doublet(after_e, lo, hi, f"pdbaft_{ch_id}_{r.idx}",
+                                                    expect=(ALPHA_PARTICLE_ENERGY, TARGET_ENERGY))
                 r.doublet_after.hist.SetTitle(
                     f"Ch {ch_id} P{r.idx}: Alpha doublet AFTER stab.;Energy (keV);Counts")
 
@@ -3877,7 +3937,8 @@ def run_stabilization(
             mu_ref_raw = float(np.median(all_raw))
         all_before = TARGET_ENERGY * all_raw / mu_ref_raw
         _, b_lo, b_hi = calcRobustLimitsAndBins(all_before.tolist())
-        doublet_before = fit_alpha_doublet(all_before, b_lo, b_hi, f"before_comb_{ch_id}")
+        doublet_before = fit_alpha_doublet(all_before, b_lo, b_hi, f"before_comb_{ch_id}",
+                                           expect=(ALPHA_PARTICLE_ENERGY, TARGET_ENERGY))
         doublet_before.hist.SetTitle(
             f"Ch {ch_id}: Alpha doublet BEFORE stabilization (rescaled);Energy (keV);Counts")
 
@@ -3885,7 +3946,8 @@ def run_stabilization(
     doublet_after = None
     if all_after.size > 0:
         _, a_lo, a_hi = calcRobustLimitsAndBins(all_after.tolist())
-        doublet_after = fit_alpha_doublet(all_after, a_lo, a_hi, f"after_comb_{ch_id}")
+        doublet_after = fit_alpha_doublet(all_after, a_lo, a_hi, f"after_comb_{ch_id}",
+                                          expect=(ALPHA_PARTICLE_ENERGY, TARGET_ENERGY))
         doublet_after.hist.SetTitle(
             f"Ch {ch_id}: Alpha doublet AFTER stabilization (all partitions);Energy (keV);Counts")
 

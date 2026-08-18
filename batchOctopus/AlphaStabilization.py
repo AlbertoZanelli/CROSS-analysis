@@ -400,6 +400,20 @@ PART_WARM_MIN_COUNTS = 5      # second, LOW threshold (raw counts) used only to 
 # handful of points to mean anything, and zero points cannot even be histogrammed).
 PART_MIN_CLEAN_EVENTS = 2
 
+# --- Linear fit of amplitude vs baseline, inside a partition ----------------
+# Two methods, one switch:
+#   "theilsen" : robust_line() -- slope = median of all pairwise slopes. NO point
+#                is excluded, and there is nothing to tune (breakdown ~29 % by
+#                construction).
+#   "rob"      : ROOT's LTS fit, Fit(f1, "Q0 rob=<LINE_FIT_ROB>"), the same one
+#                ThalliumStabilization.py uses. LINE_FIT_ROB is the fraction of
+#                points KEPT: 0.85 keeps 85 % and TRIMS the worst 15 % on the
+#                residuals. Valid range 0.5-1.0 exclusive -- ROOT silently resets
+#                anything >= 1.0 back to 0.5.
+# Set LINE_FIT_METHOD = "theilsen" to go back to the previous behaviour.
+LINE_FIT_METHOD = "rob"
+LINE_FIT_ROB    = 0.85
+
 # --- Thallium-peak search hint (multi-partition) ----------------------------
 # The thallium peak is first located on the COMBINED spectrum (all partitions
 # merged): that position is reused as a SEARCH HINT for every partition, whose
@@ -1101,18 +1115,8 @@ def AnalyzeHeaterCorrThreshold(heater_corrs, ch_id, fallback):
                   f"low-count bin at {thr:.6f}.")
     else:
         print(f">>> Ch {ch_id}: heater correlation threshold (mean+{HEATER_CORR_NSIGMA:g}sigma) = "
-                          f"{thr:.6f} (mean={mean:.6f}, sigma={sigma:.6f}).")
-        
-        #if thr < 0.999:
-            #print(f">>> Ch {ch_id}: heater correlation threshold (mean+{HEATER_CORR_NSIGMA:g}sigma) = "
-                          #f"0.9995 (mean={mean:.6f}, sigma={sigma:.6f}).")
-            #return 0.9995, h, fit
-        #else:
-            #print(f">>> Ch {ch_id}: heater correlation threshold (mean+{HEATER_CORR_NSIGMA:g}sigma) = "
-                          #f"{thr:.6f} (mean={mean:.6f}, sigma={sigma:.6f}).")
-            #return thr, h, fit
-        
-    
+              f"{thr:.6f} (mean={mean:.6f}, sigma={sigma:.6f}).")
+    return thr, h, fit
 
 
 def padded_view(x_arr, y_arr, x_pad_frac=0.45, y_pad_frac=0.55):
@@ -1377,6 +1381,12 @@ def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=Non
         sg0 = (win_hi - win_lo) * 0.02
         g = ROOT.TF1(f"g_{tag}", "gaus", mu - 3 * sg0, mu + 3 * sg0)
         g.SetParameters(h0.GetBinContent(h0.GetXaxis().FindBin(mu)), mu, sg0)
+        # Bounded like every other seed fit here: left free, a Gaussian on a WEAK
+        # peak walks off it and balloons. On ch19 P0 the recoil seed at 8149 came
+        # back as mu = 7653, sigma = 179 -- outside its own +/-34 fit range -- and
+        # every bound derived from it was then centred on nothing.
+        g.SetParLimits(1, mu - 3 * sg0, mu + 3 * sg0)
+        g.SetParLimits(2, sg0 * 0.2, sg0 * 3.0)
         h0.Fit(g, "Q0 R")
         return g.GetParameter(0), g.GetParameter(1), abs(g.GetParameter(2))
 
@@ -1393,6 +1403,16 @@ def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=Non
                      h.GetBinContent(h.GetXaxis().FindBin(lo)), 0.0)
     ff.SetParLimits(2, s1 * 0.3, s1 * 3.0)
     ff.SetParLimits(5, s2 * 0.3, s2 * 3.0)
+    # Each mean stays within HALF the doublet separation of the peak the search
+    # found: the two Gaussians can then neither swap nor collapse onto the same
+    # line. Left free, the weaker (recoil) component walks off its peak onto the
+    # continuum -- on ch19 P0 the search found the pair at 7997 + 8149 and the
+    # fit slid the second Gaussian down to 7849, so the partition was anchored
+    # one whole separation away (the rescaled peak landed at 5604 keV instead of
+    # 5407). The separation is a physical constant, so this bound costs nothing.
+    half_sep = 0.5 * DOUBLET_SEP_REL * pair[1]
+    ff.SetParLimits(1, pair[0] - half_sep, pair[0] + half_sep)
+    ff.SetParLimits(4, pair[1] - half_sep, pair[1] + half_sep)
     h.Fit(ff, "Q0 R")
     res.fit = ff
     res.mu_a, res.sig_a = ff.GetParameter(1), abs(ff.GetParameter(2))
@@ -3063,11 +3083,16 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
     # --- robust pol1 fit: ALWAYS computed (shown in red for comparison) -----
     fit_slope, fit_q0 = 0.0, res.mean_amp_clean
     if res.g_heat_vs_base_clean.GetN() > 3:
-        # Theil-Sen line over ALL the clean points of the partition: no event is
-        # excluded from the fit.
-        fit_q0, fit_slope = robust_line(clean_bases_np, clean_amps_np)
         res.f1 = ROOT.TF1(f"f1_{tag}", "pol1")
-        res.f1.SetParameters(fit_q0, fit_slope)
+        if LINE_FIT_METHOD == "rob":
+            # ROOT LTS: keeps LINE_FIT_ROB of the points, trims the rest. Which
+            # ones it dropped is internal, so they cannot be marked on the plot.
+            res.g_heat_vs_base_clean.Fit(res.f1, f"Q0 rob={LINE_FIT_ROB:.2f}")
+            fit_q0, fit_slope = res.f1.GetParameter(0), res.f1.GetParameter(1)
+        else:
+            # Theil-Sen over ALL the clean points: no event is excluded.
+            fit_q0, fit_slope = robust_line(clean_bases_np, clean_amps_np)
+            res.f1.SetParameters(fit_q0, fit_slope)
         res.fit_brange = (float(clean_bases_np.min()), float(clean_bases_np.max()))
 
     # --- line actually APPLIED ---------------------------------------------

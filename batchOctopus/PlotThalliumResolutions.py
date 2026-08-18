@@ -101,8 +101,16 @@ STEPS = [
     ("heater",     "After first heater stabilization",   "#12855F", "s"),
     ("corrected",  "After second heater stabilization",  "#D9720B", "^"),
     ("stabilized", "After thallium stabilization",       "#C1272D", "D"),
+    # Written by AlphaStabilization.py, not by the thallium program: its table
+    # has the same columns, so the same figures can be drawn from it by passing
+    # it with --csv. A key that a table does not contain is simply absent.
+    ("alpha",      "After alpha stabilization",         "#7B3FA0", "v"),
 ]
 STEP_LABEL = {k: lab for k, lab, _, _ in STEPS}
+# The alpha table's own measurement of the corrected amplitude: the same step of
+# the analysis, kept under its own key so it never overwrites the thallium
+# program's measurement of it (see COMPARISONS).
+STEP_LABEL["corrected_alpha"] = STEP_LABEL["corrected"]
 
 # The two steps compared in the significance figure: before and after the
 # thallium stabilization. The "before" is the LAST step preceding it that the
@@ -111,8 +119,23 @@ STEP_LABEL = {k: lab for k, lab, _, _ in STEPS}
 # rough panel already carries), and there the step before the thallium
 # stabilization is 'rough'. Those points are drawn hollow: the comparison is
 # still before/after, but not against the same step as the other channels.
-Z_BEFORE_KEYS = ("corrected", "rough")
-Z_BEFORE, Z_AFTER = Z_BEFORE_KEYS[0], "stabilized"
+# The before/after pairs of the significance figure, in drawing order. Each is
+# (after step, before candidates in priority order, name, marker):
+#
+#   thallium -- the second heater stabilization -> the thallium stabilization.
+#               A channel with no heater chain has no 'corrected' step at all,
+#               and is compared against its own amplitude ('rough') instead.
+#   alpha    -- the same corrected amplitude -> the alpha stabilization, from
+#               AlphaStabilization.py's table. Its own 'corrected' rows are
+#               preferred as the "before" (same events, same fit as its 'alpha',
+#               so the two errors come from one sample); they are stored apart,
+#               under 'corrected_alpha', so they never overwrite the thallium
+#               program's measurement of that step.
+COMPARISONS = (
+    ("stabilized", ("corrected", "rough"),           "thallium", "o"),
+    ("alpha",      ("corrected_alpha", "corrected"), "alpha",    "v"),
+)
+Z_BEFORE = "corrected"
 
 
 # ===========================================================================
@@ -127,7 +150,7 @@ def to_float(s):
         return float("nan")
 
 
-def read_rows(path, row_kind, background):
+def read_rows(path, row_kind, background, strict=True):
     """
     Rows of the results CSV for one canvas row and one background model.
 
@@ -136,6 +159,8 @@ def read_rows(path, row_kind, background):
     has nothing to say, and plotting it at zero would be a lie.
     """
     if not os.path.exists(path):
+        if not strict:                      # an optional second table: skip it
+            return {}, []
         sys.exit(f"[!] Results table not found: {path}\n"
                  f"    Run ThalliumStabilization.py first, or pass --csv.")
 
@@ -182,9 +207,30 @@ def read_rows(path, row_kind, background):
               f"most recent 'date' was used for each.", file=sys.stderr)
 
     if not channels:
+        if not strict:
+            return {}, []
         sys.exit(f"[!] No row with row='{row_kind}' and background='{background}' "
                  f"in {path}")
     return data, sorted(channels)
+
+
+def merge_alpha_table(data, channels, path, args):
+    """
+    Fold AlphaStabilization.py's table into *data*: its 'alpha' step, plus its
+    own 'corrected' rows kept under 'corrected_alpha' as the "before" of the
+    alpha comparison. Returns the channel list, extended with any channel only
+    that table has. A missing or empty file changes nothing.
+    """
+    a_data, a_channels = read_rows(path, args.row, args.background, strict=False)
+    if not a_data:
+        return channels
+    if a_data.get("alpha"):
+        data["alpha"] = a_data["alpha"]
+    if a_data.get("corrected"):
+        data["corrected_alpha"] = a_data["corrected"]
+    print(f">>> Alpha table: {os.path.basename(path)} "
+          f"({len(a_data.get('alpha', {}))} channel(s) with an alpha step).")
+    return sorted(set(channels) | set(a_channels))
 
 
 def student_interval(nu, cl=0.95):
@@ -434,29 +480,41 @@ def make_resolution_figure(data, channels, args):
 
 def make_significance_figure(data, channels, args, results):
     """
-    z of every channel, with the Student-t "not significant" band. *results* is
-    the list of (channel, z, nu, p) already computed by compute_significance.
+    z of every channel and every comparison, with the Student-t "not
+    significant" band. *results* is the dict compute_significance returns.
     """
-    fig, ax = new_axes(len(channels),
-                       height=5.2 if len(channels) <= 24 else 5.8)
+    n_ch = len(channels)
+    fig, ax = new_axes(n_ch, height=5.2 if n_ch <= 24 else 5.8)
 
-    good = [(i, z, nu, p, bk) for i, (ch, z, nu, p, bk) in enumerate(results)
-            if math.isfinite(z)]
-    if not good:
-        sys.exit(f"[!] No channel has both a step before the thallium "
-                 f"stabilization and '{Z_AFTER}' with a usable error: nothing "
-                 f"to compare.")
+    # Only the comparisons the data has, in the order of COMPARISONS.
+    comps = [c for c in COMPARISONS if results.get(c[0])]
+    good  = {c[0]: [(i, z, nu, p, bk)
+                    for i, (ch, z, nu, p, bk) in enumerate(results[c[0]])
+                    if math.isfinite(z)]
+             for c in comps}
+    comps = [c for c in comps if good[c[0]]]
+    if not comps:
+        sys.exit("[!] No channel has a usable before/after pair: nothing to "
+                 "compare.")
 
     col_up, col_dn = "#12855F", "#C1272D"      # improvement / worsening
-    n_ch  = len(channels)
     m_sig = 8.5 if n_ch <= 10 else (7.5 if n_ch <= 24 else 6.5)
+    # Two comparisons on one channel would draw two stems on the same vertical
+    # line, one hiding the other, so they are dodged just enough to separate.
+    n_c   = len(comps)
+    offs  = [0.0] if n_c == 1 else [(k - (n_c - 1) / 2.0) * 0.34 for k in range(n_c)]
 
     # Per-channel acceptance band: the t quantile depends on the d.o.f. of that
-    # channel's two fits, so the band is a staircase, not a pair of lines.
-    t_crit = [student_interval(nu, args.cl) for _, _, nu, _, _ in good]
-    xs     = np.array([i for i, _, _, _, _ in good], float)
-    edges  = np.concatenate([xs - 0.5, [xs[-1] + 0.5]])
-    band   = np.concatenate([t_crit, [t_crit[-1]]])
+    # channel's fits, so the band is a staircase, not a pair of lines. With more
+    # than one comparison the WIDER (more conservative) quantile is drawn.
+    t_by_x = {}
+    for c in comps:
+        for i, _, nu, _, _ in good[c[0]]:
+            t_by_x[i] = max(t_by_x.get(i, 0.0), student_interval(nu, args.cl))
+    xs    = np.array(sorted(t_by_x), dtype=float)
+    t_crit = [t_by_x[int(i)] for i in xs]
+    edges = np.concatenate([xs - 0.5, [xs[-1] + 0.5]])
+    band  = np.concatenate([t_crit, [t_crit[-1]]])
     ax.fill_between(edges, -band, band, step="post", color="#7E8794",
                     alpha=0.22, lw=0, zorder=1)
     ax.step(edges, band, where="post", color="#5C6470", lw=1.2, zorder=2)
@@ -465,35 +523,32 @@ def make_significance_figure(data, channels, args, results):
 
     ax.axhline(0.0, color="#2A2A2A", lw=1.4, zorder=3)
 
-    zs       = np.array([z for _, z, _, _, _ in good])
-    fallback = sorted({bk for _, _, _, _, bk in good if bk != Z_BEFORE})
-    for i, z, nu, p, bk in good:
-        colour = col_up if z >= 0 else col_dn
-        # Hollow when the "before" is not the usual step: the point is still a
-        # before/after of the thallium stabilization, but of a shorter chain.
-        if bk == Z_BEFORE:
-            ax.plot([i], [z], "o", ms=m_sig, mfc=colour, mec="white", mew=1.0,
-                    zorder=6)
-        else:
-            ax.plot([i], [z], "o", ms=m_sig, mfc="white", mec=colour, mew=2.0,
-                    zorder=6)
-        # Stem down to zero: it turns a cloud of dots into a per-channel bar of
-        # evidence, which is what a significance plot is read for. Solid, not
-        # faded: at detector scale the stems ARE the shape of the figure.
-        ax.plot([i, i], [0.0, z], "-", color=colour,
-                lw=2.2 if n_ch <= 24 else 1.8, alpha=0.85, zorder=4)
+    all_z, fallback = [], set()
+    for (after_key, before_keys, _, marker), dx in zip(comps, offs):
+        for i, z, nu, p, bk in good[after_key]:
+            all_z.append(z)
+            colour = col_up if z >= 0 else col_dn
+            # Hollow when the "before" is not the usual step: still a before/after
+            # of the same stabilization, but of a shorter chain.
+            hollow = (bk != before_keys[0])
+            if hollow:
+                fallback.add(bk)
+            ax.plot([i + dx], [z], marker, ms=m_sig,
+                    mfc=("white" if hollow else colour), mec=(colour if hollow else "white"),
+                    mew=(2.0 if hollow else 1.0), zorder=6)
+            # Stem down to zero: it turns a cloud of dots into a per-channel bar
+            # of evidence, which is what a significance plot is read for.
+            ax.plot([i + dx, i + dx], [0.0, z], "-", color=colour,
+                    lw=2.0 if n_ch <= 24 else 1.6, alpha=0.85, zorder=4)
 
     ax.set_ylabel("Significance  $z$", fontsize=12.5, labelpad=8)
-    # Limits follow the data instead of being mirrored around zero: when almost
-    # every channel improves, a symmetric range spends half the figure on an
-    # empty lower half and squashes the points that carry the message. The
-    # acceptance band is always kept fully visible.
-    ax.set_ylim(min(-1.35 * max(t_crit), 1.15 * float(zs.min())),
-                max( 1.35 * max(t_crit), 1.15 * float(zs.max())))
+    zs = np.asarray(all_z, float)
+    # Headroom above the tallest stem: the "improvement" caption lives up there.
+    ax.set_ylim(min(-1.35 * max(t_crit), 1.20 * float(zs.min())),
+                max( 1.35 * max(t_crit), 1.30 * float(zs.max())))
     ax.yaxis.set_minor_locator(AutoMinorLocator(2))
     finish_axes(ax, channels)
 
-    # Which way is up: stated on the plot, not left to the caption.
     # On a white patch: the lower one sits on the acceptance band.
     _bbox = dict(facecolor="white", alpha=0.8, edgecolor="none", pad=2.0)
     ax.text(0.99, 0.955, "$\\uparrow$ improvement", transform=ax.transAxes,
@@ -503,40 +558,50 @@ def make_significance_figure(data, channels, args, results):
             ha="right", va="bottom", fontsize=11, color=col_dn,
             fontweight="bold", bbox=_bbox, zorder=7)
 
-    ax.set_title("Statistical significance of the resolution change produced by "
-                 "the thallium stabilization",
+    names = " and ".join(c[2] for c in comps)
+    ax.set_title(f"Statistical significance of the resolution change produced by "
+                 f"the {names} stabilization" + ("s" if len(comps) > 1 else ""),
                  fontsize=13.5, fontweight="bold", pad=54)
-    nus = [nu for _, _, nu, _, _ in good if math.isfinite(nu)]
+    nus = [nu for c in comps for _, _, nu, _, _ in good[c[0]] if math.isfinite(nu)]
     nu_note = f"$\\nu\\approx${np.median(nus):.0f}" if nus else "Gaussian limit"
-    add_subtitle(ax,
-                 f"{STEP_LABEL[Z_BEFORE]}  $\\rightarrow$  {STEP_LABEL[Z_AFTER]}"
-                 f"  |  {len(good)} channels",
+    # When every comparison starts from the same step -- the usual case, both
+    # stabilizations acting on the corrected amplitude -- name it once instead
+    # of repeating the whole pair.
+    befores = {STEP_LABEL[c[1][0]] for c in comps}
+    afters  = ",  ".join(STEP_LABEL[c[0]] for c in comps)
+    pairs   = (f"{befores.pop()} $\\rightarrow$ {afters}" if len(befores) == 1 else
+               ";  ".join(f"{STEP_LABEL[c[1][0]]} $\\rightarrow$ {STEP_LABEL[c[0]]}"
+                          for c in comps))
+    add_subtitle(ax, f"{pairs}  |  {n_ch} channels",
                  "$z=(R_\\mathrm{before}-R_\\mathrm{after})/"
                  "\\sqrt{\\sigma_\\mathrm{before}^2+\\sigma_\\mathrm{after}^2}$"
                  "  |  errors added in quadrature")
 
     handles = [
-        Line2D([], [], color=col_up, marker="o", ms=9, mfc=col_up, mec="white",
+        Line2D([], [], color=col_up, marker="s", ms=9, mfc=col_up, mec="white",
                mew=0.8, ls="none", label="resolution improved  ($z>0$)"),
-        Line2D([], [], color=col_dn, marker="o", ms=9, mfc=col_dn, mec="white",
+        Line2D([], [], color=col_dn, marker="s", ms=9, mfc=col_dn, mec="white",
                mew=0.8, ls="none", label="resolution worsened  ($z<0$)"),
         Patch(facecolor="#9AA0A6", alpha=0.3,
               label=f"not significant at {100*args.cl:.0f} % "
                     f"(Student $t$, {nu_note})"),
     ]
-    for bk in fallback:
-        handles.append(Line2D([], [], color="#555555", marker="o", ms=8,
+    if len(comps) > 1:
+        for after_key, _, name, marker in comps:
+            handles.append(Line2D([], [], color="#444444", marker=marker, ms=9,
+                                  mfc="#444444", mec="white", mew=0.8, ls="none",
+                                  label=f"{name} stabilization"))
+    for bk in sorted(fallback):
+        handles.append(Line2D([], [], color="#555555", marker="o", ms=9,
                               mfc="white", mec="#555555", mew=2.0, ls="none",
                               label=f"compared against {STEP_LABEL[bk].lower()}"))
 
-    # An extra entry pushes the legend onto a second row: drop it further so it
-    # does not sit on the x-axis label.
     leg = ax.legend(handles=handles, loc="upper center",
                     bbox_to_anchor=(0.5, -0.14 - 0.07 * (len(handles) > 3)),
                     ncol=3, frameon=True,
                     fontsize=10, borderpad=0.7, columnspacing=1.8,
                     handletextpad=0.7)
-    leg.get_frame().set_edgecolor("#CCCCCC")
+    leg.get_frame().set_edgecolor("#AAAAAA")
     leg.get_frame().set_facecolor("white")
 
     fig.tight_layout()
@@ -545,19 +610,25 @@ def make_significance_figure(data, channels, args, results):
 
 def compute_significance(data, channels):
     """
-    [(channel, z, nu, p, before_key)] for every channel, in the order given.
-    *before_key* is the step the comparison actually used (see Z_BEFORE_KEYS).
+    {after_key: [(channel, z, nu, p, before_key)]} for every comparison of
+    COMPARISONS the data actually contains, in the order given. *before_key* is
+    the step each channel was compared against.
     """
-    after = data.get(Z_AFTER, {})
-    out   = []
-    for ch in channels:
-        for key in Z_BEFORE_KEYS:
-            rec = data.get(key, {}).get(ch)
-            if rec is not None:
-                out.append((ch, *significance(rec, after.get(ch)), key))
-                break
-        else:
-            out.append((ch, float("nan"), float("nan"), float("nan"), None))
+    out = {}
+    for after_key, before_keys, _, _ in COMPARISONS:
+        after = data.get(after_key)
+        if not after:
+            continue
+        rows = []
+        for ch in channels:
+            for key in before_keys:
+                rec = data.get(key, {}).get(ch)
+                if rec is not None:
+                    rows.append((ch, *significance(rec, after.get(ch)), key))
+                    break
+            else:
+                rows.append((ch, float("nan"), float("nan"), float("nan"), None))
+        out[after_key] = rows
     return out
 
 
@@ -585,22 +656,28 @@ def print_tables(data, channels, args, results):
                 cells.append(f"{rec['res']:7.3f} +/-   n/a")
         print(f"{ch:>5} | " + " | ".join(f"{c:^18}" for c in cells))
 
-    print(f"\nSignificance of the thallium stabilization (-> {STEP_LABEL[Z_AFTER]})")
-    print(f"{'ch':>5} | {'before':^12} | {'z':>7} | {'nu_eff':>7} | "
-          f"{'p (2-sided)':>12} | verdict")
-    print("-" * 74)
-    for ch, z, nu, p, bk in results:
-        name = bk if bk else "-"
-        if not math.isfinite(z):
-            print(f"{ch:>5} | {name:^12} |     n/a |     n/a |          n/a | "
-                  f"no usable error")
+    for after_key, before_keys, name, _ in COMPARISONS:
+        rows = results.get(after_key)
+        if not rows:
             continue
-        t_c = student_interval(nu, args.cl)
-        if abs(z) < t_c:
-            verdict = "not significant"
-        else:
-            verdict = "improvement" if z > 0 else "WORSENING"
-        print(f"{ch:>5} | {name:^12} | {z:7.2f} | {nu:7.1f} | {p:12.2e} | {verdict}")
+        print(f"\nSignificance of the {name} stabilization "
+              f"(-> {STEP_LABEL[after_key]})")
+        print(f"{'ch':>5} | {'before':^16} | {'z':>7} | {'nu_eff':>7} | "
+              f"{'p (2-sided)':>12} | verdict")
+        print("-" * 78)
+        for ch, z, nu, p, bk in rows:
+            label = bk if bk else "-"
+            if not math.isfinite(z):
+                print(f"{ch:>5} | {label:^16} |     n/a |     n/a |          n/a | "
+                      f"no usable error")
+                continue
+            t_c = student_interval(nu, args.cl)
+            if abs(z) < t_c:
+                verdict = "not significant"
+            else:
+                verdict = "improvement" if z > 0 else "WORSENING"
+            print(f"{ch:>5} | {label:^16} | {z:7.2f} | {nu:7.1f} | {p:12.2e} | "
+                  f"{verdict}")
     print()
 
 
@@ -615,6 +692,13 @@ def main():
                     "table written by ThalliumStabilization.py.")
     ap.add_argument("--csv", default=DEFAULT_CSV,
                     help=f"results table (default: {DEFAULT_CSV})")
+    ap.add_argument("--alpha-csv", dest="alpha_csv", default=None,
+                    help="AlphaStabilization.py's results table, folded in as "
+                         "the 'After alpha stabilization' step and its own "
+                         "significance (default: alpha_thallium_resolutions.csv "
+                         "in ../AlphaStabilizedAmp, when it exists)")
+    ap.add_argument("--no-alpha", dest="use_alpha", action="store_false",
+                    help="ignore the alpha table even when it is there")
     ap.add_argument("--row", choices=["energy", "native"], default="energy",
                     help="canvas row to read (default: energy, the rescaled "
                          "peak, comparable across steps and channels)")
@@ -643,6 +727,15 @@ def main():
     args = ap.parse_args()
 
     data, channels = read_rows(args.csv, args.row, args.background)
+
+    # Second table, written by AlphaStabilization.py: same columns, one more
+    # step. Looked for next to the thallium one unless a path is given.
+    if args.use_alpha:
+        alpha_csv = args.alpha_csv or os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(args.csv)), "..",
+            "AlphaStabilizedAmp", "alpha_thallium_resolutions.csv"))
+        channels = merge_alpha_table(data, channels, alpha_csv, args)
+
     if args.channels:
         channels = [c for c in channels if c in set(args.channels)]
         if not channels:

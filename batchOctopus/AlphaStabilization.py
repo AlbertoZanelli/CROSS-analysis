@@ -98,8 +98,10 @@ import math
 import time
 import traceback
 import argparse
+import csv
 import re
 from array import array
+from datetime import datetime
 
 # -- third-party -------------------------------------------------------------
 import numpy as np
@@ -145,6 +147,7 @@ ANALYSIS_MODE = "mergedrun"     # "mergedrun" or "run"
 
 # mergedrun mode: folder containing the input .root files.
 BASE_DIR = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS/MergedRuns/CorrectedAmp"  # e.g. .../MergedRuns/CorrectedAmps
+BASE_DIR_PERSONAL = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS/MergedRuns/CorrectedAmp"
 
 # run mode: CROSS folder holding the RUNxxxxxx sub-folders, and the run number.
 CROSS_DIR  = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS"
@@ -244,6 +247,23 @@ STABILIZE_ON_RECOIL = True
 # Placeholders for 210-Po: alpha-particle line 5304.33, full Q (alpha+recoil)
 # 5407.45. CONFIRM the isotope/value.
 TARGET_ENERGY = 5407.45   # keV, alpha+recoil (Q-value) line  (CONFIRM)
+ALPHA_PARTICLE_ENERGY = 5304.33   # keV, alpha-particle line (the doublet's lower peak)
+# The two lines are a FIXED distance apart, so the doublet's separation is a
+# known FRACTION of its position -- about 1.9 % -- whatever the units of the
+# spectrum. The window search uses it to tell the doublet from two unrelated
+# structures: on ch57 the most prominent pair was a continuum fluctuation at
+# rough 5222 and the real alpha peak at 5768, ten per cent apart, and the window
+# ended up between them. The rough calibration is only approximate, hence a
+# generous band: separations within [1/tol, tol] times the expected one pass.
+DOUBLET_SEP_REL = (TARGET_ENERGY - ALPHA_PARTICLE_ENERGY) / TARGET_ENERGY
+DOUBLET_SEP_TOL = 2.0
+# Bin width of the doublet histograms, as sigma / this. Lower = WIDER bins. A
+# low-statistics partition fitted on sigma/4 bins has a handful of counts per
+# bin, the two peaks come out ragged and the joint fit can end up describing the
+# lower line twice -- on ch57 partition 0 the stabilization then anchored on the
+# alpha peak instead of the alpha+recoil one. Wider bins average that noise away.
+DOUBLET_BIN_DIV = 2.0
+DOUBLET_COARSE_BINS = 60   # bins of the first, exploratory pass (peak search)
 
 # --- Thallium cross-check (resolution gain from the ALPHA stabilization) -----
 # A SEPARATE, read-only diagnostic (it does NOT alter the stabilization or the
@@ -263,9 +283,90 @@ TL_CAL_STAB_MIN, TL_CAL_STAB_MAX = 2400.0, 2700.0  # Tl-peak fit window (rough)
 # dominant peak found inside.
 TL_SPEC_DISP_MIN, TL_SPEC_DISP_MAX = 2300.0, 2800.0
 
+# --- Thallium chain comparison (combined-thallium canvas) --------------------
+# The cross-check is drawn with the SAME machinery as ThalliumStabilization.py:
+# one COLUMN per amplitude (the corrected amplitude and the alpha-stabilized
+# one) and three ROWS -- full spectrum, peak + fit in native units, the same
+# peak rescaled to the Tl energy. Window, binning and width bounds all descend
+# from ONE measurement of the line where it is unambiguous: the corrected
+# amplitude of the gamma events selected by the correlation + LY cuts. That is
+# the role the per-partition thallium peaks play in ThalliumStabilization.py --
+# here the partitions are anchored to the ALPHA line, so they cannot serve.
+TL_CHAIN_DISP_MIN, TL_CHAIN_DISP_MAX = 2300.0, 2800.0  # row 1, in rough units
+TL_CHAIN_FULL_BINS   = 80     # bins of the full-range spectra (row 1)
+TL_CHAIN_MAIN_KEY    = "corrected"   # the variable the line is measured on
+TL_CHAIN_SEARCH_FRAC = 0.04   # half-width of the band the peak is looked for in
+TL_CHAIN_WIN_NSIGMA  = 6      # fallback half-window, in sigma
+TL_CHAIN_MIN_BINS    = 15
+TL_CHAIN_MAX_BINS    = 200
+TL_PEAK_MEAN_MAX_SHIFT = 2.0  # how far the fitted mean may move, in sigma
+# Defaults of the per-channel settings (see TL_CHAIN_CSV_PATH), in the order of
+# the chain variables: corrected amplitude, alpha-stabilized amplitude.
+TL_CHAIN_PEAK_NSIGMA = 6.0    # window half-width = this many measured sigmas
+TL_CHAIN_WIN_SCALE   = [1.0, 1.0]
+TL_CHAIN_BIN_DIV     = [4.0, 4.0]
+TL_CHAIN_SIG_SCALE   = [1.0, 1.0]
+TL_CHAIN_SIG_LO      = 0.3    # width bound, as a fraction of the EXPECTED sigma
+TL_CHAIN_SIG_HI      = 1.5
+# Typical relative width (sigma/mu) of the thallium line, used when NO partition
+# peak is available and the interval cannot be measured. Same constant, same role
+# and same value as in ThalliumStabilization.py.
+CHAIN_SIG_TYPICAL = 0.010
+# Whether the LOCAL Tl peak of a partition is trusted is decided on how well it
+# stands out of the continuum, NOT on the event count: a clear peak found on few
+# events is still a peak, while many events with no visible line are not. Same
+# constants and same rule as in ThalliumStabilization.py.
+PEAK_SIGNIF_NSIGMA = 2.0
+PEAK_SIGNIF_MIN    = 3.0
+# Per-channel settings, on file. Kept SEPARATE from the thallium program's
+# chain_settings.csv: the variables are different (there the whole heater chain,
+# here the two amplitudes of the alpha stabilization), so one file per program
+# keeps the hand-tuned rows of each safe.
+TL_CHAIN_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "alpha_chain_settings.csv")
+TL_USE_CHAIN_CSV  = True
+# The corrected amplitude is the SAME variable the thallium program fits, so the
+# panels are set up from THAT program's file instead of being tuned twice: the
+# columns ending in "_corrected" of chain_settings.csv win over the local ones,
+# for BOTH panels (corrected and alpha-stabilized).
+# Set to None to keep everything local.
+TL_SHARED_CHAIN_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "chain_settings.csv")
+# ...and, going one step further, the WINDOW itself: the thallium program writes
+# the interval it fitted each panel in (win_frac / res_exp) into its results
+# table, so the corrected-amplitude panel here can be fitted in exactly the same
+# window as there. The "before" of the alpha comparison is then not merely
+# similar to the thallium program's corrected panel -- it is the same
+# measurement, and the two tables can be put on one figure. Falls back to the
+# local measurement when the file or the row is missing.
+TL_REUSE_THALLIUM_WINDOW = True
+TL_THALLIUM_RES_CSV = os.path.join("..", "ThalliumStabilizedAmp",
+                                   "thallium_resolutions.csv")
+# Results table: same columns as the thallium program's, so the same plotting
+# program reads it (PlotThalliumResolutions.py --csv <this file>).
+TL_SAVE_RES_CSV   = True
+TL_RES_CSV_NAME   = "alpha_thallium_resolutions.csv"
+# Results of the ALPHA line itself (the alpha+recoil peak the analysis reports),
+# before and after the stabilization: same long format and same columns as the
+# tables above, so the same plotting program reads it.
+SAVE_ALPHA_RES_CSV = True
+ALPHA_RES_CSV_NAME = "alpha_resolutions.csv"
+
 # --- Correlation cut --------------------------------------------------------
-CORR_VALID_MIN      = 0.999   # events below this correlation are ignored
+# The percentile is taken over the correlations ABOVE the heater cluster, not
+# above the fixed CORR_VALID_MIN: the pulser sits at very high, stable
+# correlation, and a cut that does not clear it leaves its razor-thin amplitude
+# peak in the spectrum -- on ch57 that peak is inside the alpha search region
+# and the analysis window used to be built on it. Same recipe as
+# ThalliumStabilization.py (AnalyzeHeaterCorrThreshold).
+CORR_VALID_MIN      = 0.999   # fallback lower bound, when there is no heater
 CORR_CUT_PERCENTILE = 0.10    # dynamic cut at this percentile of valid corr
+
+
+# --- Heater-correlation lower bound -----------------------------------------
+HEATER_CORR_MIN   = 0.992   # heater-correlation histogram lower edge (search start)
+HEATER_CORR_BINS  = 70      # bins of that histogram
+HEATER_CORR_NSIGMA = 2.0    # lower bound = heater-peak mean + this many sigma
 
 # --- Peak-selection half-widths (in sigma) ----------------------------------
 LY_N_SIGMA        = 4.0   # thallium acceptance half-width in the LY spectrum
@@ -278,12 +379,21 @@ HEAT_CLEAN_NSIGMA = 1.5   # pre-cleaning half-width around the thallium peak
 # EMPTY bins. Close peaks with counts between them stay in the same partition.
 PART_N_BINS          = 200    # bins of the baseline histogram used for the search
 PART_MIN_GAP_BINS    = 4      # a separation needs at least this many consecutive low bins
-PART_GAP_HEIGHT_FRAC = 0.05   # a bin belongs to a GAP when its height is below this fraction
+PART_GAP_HEIGHT_FRAC = 0.03   # a bin belongs to a GAP when its height is below this fraction
                               # of the tallest block: gaps are judged by RELATIVE height, not
                               # raw counts (a few stray counts in a deep valley still separate)
 PART_MIN_BLOCK_FRAC  = 0.15   # blocks below this fraction of the MOST POPULATED block are
                               # absorbed into the nearest (in baseline) block: small isolated
                               # peaks join the closest partition instead of forming their own
+PART_WARM_MIN_COUNTS = 5      # second, LOW threshold (raw counts) used only to recover a
+                              # population the relative one cannot see: a cluster far from the
+                              # main peak is short in BIN HEIGHT but can hold a large share of
+                              # the events. It becomes a partition only if its integral passes
+                              # PART_MIN_BLOCK_FRAC, so strays never do
+# Fewer clean events than this in a partition: no local line is fitted, the
+# partition inherits the nearest fitted one (a Gaussian and a linear fit need a
+# handful of points to mean anything, and zero points cannot even be histogrammed).
+PART_MIN_CLEAN_EVENTS = 2
 
 # --- Thallium-peak search hint (multi-partition) ----------------------------
 # The thallium peak is first located on the COMBINED spectrum (all partitions
@@ -304,6 +414,7 @@ SIGMA_TO_FWHM = 2.0 * math.sqrt(2.0 * math.log(2.0))
 # PATH / NAMING HELPERS  (analysis-mode dependent)
 # ===========================================================================
 
+
 def resolve_scan_dir():
     """
     Folder to scan for input .root files, depending on ANALYSIS_MODE:
@@ -312,6 +423,10 @@ def resolve_scan_dir():
     """
     if ANALYSIS_MODE in ("run", "calibrationrun"):
         return os.path.join(CROSS_DIR, f"RUN{int(RUN_NUMBER):06d}", "Coincidence")
+    
+    if not os.path.isdir(BASE_DIR):
+        return BASE_DIR_PERSONAL
+    
     return BASE_DIR
 
 
@@ -667,6 +782,21 @@ def AnalyzeLightYield(h_ly, name_ext):
     return res
 
 
+def ld_usable(vals, min_events=20):
+    """
+    Is this light detector usable for the LY cut?
+
+    A detector that is not there still has its LD*_LY branch, filled with
+    EXACTLY zero for every event (ch60: 254793 zeros in LD2). Fitted, that spike
+    at the origin yields a splendid |mu|/sigma and wins the "best resolved"
+    comparison, so the cut ends up being made on a channel that measured
+    nothing. A detector is usable only if it has enough events with a NON-ZERO
+    light yield.
+    """
+    v = np.asarray(vals, np.float64)
+    return int(np.count_nonzero(np.isfinite(v) & (v != 0.0))) >= min_events
+
+
 def CreateLYBox(res, title_prefix):
     """Build an NDC TPaveText summarising the LY thallium/alpha fit results."""
     pt = ROOT.TPaveText(0.60, 0.55, 0.93, 0.85, "NDC")
@@ -695,10 +825,114 @@ def CreateLYBox(res, title_prefix):
     pt.AddText("")   # bottom padding: keep text off the box border
     return pt
 
+def CreateLYBoxThallium(res, title_prefix):
+    """Build an NDC TPaveText summarising the LY thallium/alpha fit results."""
+    pt = ROOT.TPaveText(0.60, 0.55, 0.93, 0.85, "NDC")
+    pt.SetFillColor(ROOT.kWhite); pt.SetBorderSize(1)
+    pt.SetTextAlign(12); pt.SetTextFont(42); pt.SetTextSize(0.028)
+    pt.AddText("")   # top padding: keep text off the box border
+    if res.df_value > 0:
+        t = pt.AddText(f"{title_prefix} DF (Alpha-Tl) = {res.df_value:.2f}")
+        t.SetTextColor(ROOT.kBlack); t.SetTextFont(62); pt.AddText("")
+
+    t_tl = pt.AddText("THALLIUM FIT")
+    t_tl.SetTextColor(ROOT.kBlue); t_tl.SetTextFont(62)
+    pt.AddText(f"#chi^{{2}}/ndf = {res.fit_Tl.GetChisquare():.1f}/{res.fit_Tl.GetNDF()} "
+               f"(P:{res.fit_Tl.GetProb():.2f})")
+    pt.AddText(f"#mu = {res.fit_Tl.GetParameter(1):.4f} #pm {res.fit_Tl.GetParError(1):.4f}")
+    pt.AddText(f"#sigma = {res.fit_Tl.GetParameter(2):.5f} #pm {res.fit_Tl.GetParError(2):.5f}")
+    pt.AddText("")
+
+    if res.fit_alpha:
+        t_al = pt.AddText("ALPHA FIT")
+        t_al.SetTextColor(ROOT.kGreen + 2); t_al.SetTextFont(62)
+        pt.AddText(f"#chi^{{2}}/ndf = {res.fit_alpha.GetChisquare():.1f}/{res.fit_alpha.GetNDF()} "
+                   f"(P:{res.fit_alpha.GetProb():.2f})")
+        pt.AddText(f"#mu = {res.fit_alpha.GetParameter(1):.4f} #pm {res.fit_alpha.GetParError(1):.4f}")
+        pt.AddText(f"#sigma = {res.fit_alpha.GetParameter(2):.5f} #pm {res.fit_alpha.GetParError(2):.5f}")
+    pt.AddText("")   # bottom padding: keep text off the box border
+    return pt
+
 
 # ===========================================================================
 # FIT-RESULT BOX + PEAK FINDER
 # ===========================================================================
+
+def fit_metrics(fit, hist=None):
+    """
+    Results of a Gaussian(+background) fit as a plain dict: position, width,
+    FWHM, percentage resolution and their errors, the fit quality and -- when
+    *hist* is given -- the counts under the Gaussian component.
+
+    Single source of the numbers shown in the fit boxes AND written to the
+    results CSV, so the two can never disagree. Returns None when *fit* is None.
+    """
+    if fit is None:
+        return None
+
+    mu     = fit.GetParameter(1)
+    mu_e   = fit.GetParError(1)
+    sigma  = abs(fit.GetParameter(2))
+    sig_e  = fit.GetParError(2)
+    fwhm   = SIGMA_TO_FWHM * sigma
+    fwhm_e = SIGMA_TO_FWHM * sig_e
+
+    # Percentage resolution and its error. R = 100*FWHM/mu, so the relative
+    # errors of FWHM and mu add in quadrature (they are treated as
+    # uncorrelated, which is the usual approximation for a Gaussian fit).
+    res = res_e = float("nan")
+    if abs(mu) > 1e-12:
+        res   = 100.0 * fwhm / abs(mu)
+        rel_f = (fwhm_e / fwhm) if fwhm > 0 else 0.0
+        rel_m = mu_e / abs(mu)
+        res_e = res * math.sqrt(rel_f * rel_f + rel_m * rel_m)
+
+    ndf = fit.GetNDF()
+    # Counts under the peak: the Gaussian integral in bin units.
+    n_peak = float("nan")
+    if hist is not None:
+        bw = hist.GetXaxis().GetBinWidth(1)
+        if bw > 0:
+            n_peak = fit.GetParameter(0) * sigma * math.sqrt(2 * math.pi) / bw
+
+    return dict(mu=mu, mu_err=mu_e, sigma=sigma, sigma_err=sig_e,
+                fwhm=fwhm, fwhm_err=fwhm_e, res=res, res_err=res_e,
+                chi2=fit.GetChisquare(), ndf=ndf,
+                prob=(fit.GetProb() if ndf > 0 else float("nan")),
+                n_peak=n_peak,
+                n_hist=(hist.GetEntries() if hist is not None else float("nan")))
+
+
+def doublet_metrics(d):
+    """
+    The reported peak of an AlphaDoublet as a plain dict, errors included: the
+    alpha+recoil line when the fit resolved the doublet, the single fitted peak
+    otherwise. Single source of the numbers in the fit boxes AND in the results
+    CSV, so the two cannot disagree. None when there is no fit.
+    """
+    if d is None or d.fit is None:
+        return None
+    if d.mu_r is not None and d.sig_r > 0:
+        name, mu, mu_e = "ALPHA+RECOIL peak", d.mu_r, d.mu_r_err
+        sigma, sig_e   = abs(d.sig_r), d.sig_r_err
+    else:
+        name, mu, mu_e = "ALPHA peak (single)", d.mu_a, d.mu_a_err
+        sigma, sig_e   = abs(d.sig_a), d.sig_a_err
+
+    fwhm, fwhm_e = SIGMA_TO_FWHM * sigma, SIGMA_TO_FWHM * sig_e
+    res = res_e = float("nan")
+    if abs(mu) > 1e-12:
+        res   = 100.0 * fwhm / abs(mu)
+        rel_f = (fwhm_e / fwhm) if fwhm > 0 else 0.0
+        rel_m = mu_e / abs(mu)
+        res_e = res * math.sqrt(rel_f * rel_f + rel_m * rel_m)
+
+    ndf = d.fit.GetNDF()
+    return dict(name=name, mu=mu, mu_err=mu_e, sigma=sigma, sigma_err=sig_e,
+                fwhm=fwhm, fwhm_err=fwhm_e, res=res, res_err=res_e,
+                chi2=d.fit.GetChisquare(), ndf=ndf,
+                prob=(d.fit.GetProb() if ndf > 0 else float("nan")))
+
 
 def CreateFitBox(fit, header, header_color=ROOT.kBlack,
                  x1=0.13, y1=0.60, x2=0.50, y2=0.88,
@@ -723,30 +957,29 @@ def CreateFitBox(fit, header, header_color=ROOT.kBlack,
         pt.AddText("(fit non disponibile)")
         return pt
 
-    mu     = fit.GetParameter(1)
-    sigma  = abs(fit.GetParameter(2))
-    sig_e  = fit.GetParError(2)
-    fwhm   = SIGMA_TO_FWHM * sigma
-    fwhm_e = SIGMA_TO_FWHM * sig_e
-    ndf    = fit.GetNDF()
+    m = fit_metrics(fit)
 
-    if ndf > 0:
-        pt.AddText(f"#chi^{{2}}/ndf = {fit.GetChisquare():.1f}/{ndf} "
-                   f"(P:{fit.GetProb():.2f})")
-    pt.AddText(f"#mu = {mu:.4f} #pm {fit.GetParError(1):.4f}")
-    pt.AddText(f"#sigma = {sigma:.5f} #pm {sig_e:.5f}")
-    pt.AddText(f"FWHM = {fwhm:.5f} #pm {fwhm_e:.5f}")
-    if abs(mu) > 1e-12:
-        pt.AddText(f"Risoluzione = {100.0 * fwhm / abs(mu):.2f} %")
+    if m["ndf"] > 0:
+        pt.AddText(f"#chi^{{2}}/ndf = {m['chi2']:.1f}/{m['ndf']} "
+                   f"(P:{m['prob']:.2f})")
+    pt.AddText(f"#mu = {m['mu']:.4f} #pm {m['mu_err']:.4f}")
+    pt.AddText(f"#sigma = {m['sigma']:.5f} #pm {m['sigma_err']:.5f}")
+    pt.AddText(f"FWHM = {m['fwhm']:.5f} #pm {m['fwhm_err']:.5f}")
+    if math.isfinite(m["res"]):
+        pt.AddText(f"Risoluzione = {m['res']:.2f} #pm {m['res_err']:.2f} %")
     return pt
 
 
 def CreateDoubletBox(d, header, header_color=ROOT.kBlack,
                      x1=0.13, y1=0.50, x2=0.52, y2=0.88):
     """
-    NDC TPaveText summarising an AlphaDoublet fit: chi2/ndf and, for BOTH peaks
-    (alpha-particle and alpha+recoil), mu, sigma, FWHM and percentage resolution
-    (FWHM/mu*100). *d* is the AlphaDoublet returned by fit_alpha_doublet.
+    NDC TPaveText with the results of the peak the analysis REPORTS: the
+    alpha+recoil line (the full Q-value line, the stabilization reference when
+    STABILIZE_ON_RECOIL), with mu, sigma, FWHM and percentage resolution, each
+    with its fit error. The alpha-particle line is fitted -- the doublet is
+    fitted jointly, and having both peaks in the model is what keeps them from
+    stealing each other's counts -- but it is not the quantity of interest, so
+    it is not printed. When the fit found a single peak, that one is shown.
     """
     pt = ROOT.TPaveText(x1, y1, x2, y2, "NDC")
     pt.SetFillColor(ROOT.kWhite); pt.SetBorderSize(1)
@@ -762,17 +995,15 @@ def CreateDoubletBox(d, header, header_color=ROOT.kBlack,
         pt.AddText(f"#chi^{{2}}/ndf = {d.fit.GetChisquare():.1f}/{ndf} "
                    f"(P:{d.fit.GetProb():.2f})")
 
-    def peak_lines(name, mu, sigma, col):
-        sigma = abs(sigma)
-        fwhm  = SIGMA_TO_FWHM * sigma
-        t = pt.AddText(name); t.SetTextColor(col); t.SetTextFont(62)
-        pt.AddText(f"  #mu = {mu:.2f}   #sigma = {sigma:.2f}")
-        res = f"   ({100.0 * fwhm / abs(mu):.2f} %)" if abs(mu) > 1e-12 else ""
-        pt.AddText(f"  FWHM = {fwhm:.2f}{res}")
-
-    peak_lines("ALPHA peak", d.mu_a, d.sig_a, ROOT.kBlue + 1)
-    if d.mu_r is not None:
-        peak_lines("ALPHA+RECOIL peak", d.mu_r, d.sig_r, ROOT.kGreen + 3)
+    m = doublet_metrics(d)
+    if m is None:
+        return pt
+    t = pt.AddText(m["name"]); t.SetTextColor(ROOT.kGreen + 3); t.SetTextFont(62)
+    pt.AddText(f"  #mu = {m['mu']:.2f} #pm {m['mu_err']:.2f}")
+    pt.AddText(f"  #sigma = {m['sigma']:.2f} #pm {m['sigma_err']:.2f}")
+    pt.AddText(f"  FWHM = {m['fwhm']:.2f} #pm {m['fwhm_err']:.2f}")
+    if math.isfinite(m["res"]):
+        pt.AddText(f"  Risoluzione = {m['res']:.2f} #pm {m['res_err']:.2f} %")
     return pt
 
 
@@ -789,6 +1020,84 @@ def CreateLineBox(f1, header="LINEAR FIT", header_color=ROOT.kRed,
     pt.AddText(f"q_{{0}} = {f1.GetParameter(0):.2f} #pm {f1.GetParError(0):.2f}")
     pt.AddText(f"slope = {f1.GetParameter(1):.2f} #pm {f1.GetParError(1):.2f}")
     return pt
+
+
+def AnalyzeHeaterCorrThreshold(heater_corrs, ch_id, fallback):
+    """
+    Correlation value 'just above the heater events'.
+
+    This is used as the LOWER bound of the interval over which the dynamic
+    correlation-cut percentile (CORR_CUT_PERCENTILE) is taken, replacing the
+    fixed CORR_VALID_MIN. Heater (pulser) events cluster at very high, stable
+    correlation; the returned value sits just above that cluster.
+
+    Procedure (heater events only, taken RAW: heater flag == 1, corr>HEATER_CORR_MIN):
+      - histogram the heater-event correlations;
+      - locate the RIGHTMOST peak (TSpectrum, else the tallest bin);
+      - Gaussian-fit it and return  mean + HEATER_CORR_NSIGMA*sigma;
+      - if that exceeds 1.0, walk the peak's right tail down to the first bin
+        below 5 % of the peak height and use that correlation instead.
+    Any failure (<=10 heater events, degenerate fit, tail scan failing) returns
+    *fallback* (CORR_VALID_MIN).
+
+    Returns (threshold, h_corr_heater or None, fit or None). The histogram and
+    fit are kept for the debug drawing.
+    """
+    raw = np.asarray(heater_corrs, dtype=np.float64)
+    raw = raw[np.isfinite(raw) & (raw > HEATER_CORR_MIN)]
+    if len(raw) <= 10:
+        print(f">>> Ch {ch_id}: <=10 heater events with corr>{HEATER_CORR_MIN}; "
+              f"heater threshold falls back to CORR_VALID_MIN={fallback:.6f}.")
+        return fallback, None, None
+
+    h = ROOT.TH1F(f"h_corr_heater_{ch_id}",
+                  f"Ch {ch_id}: Heater Correlation; Correlation; Counts",
+                  HEATER_CORR_BINS, HEATER_CORR_MIN, 1.00005)
+    h.SetDirectory(0)
+    h.FillN(len(raw), raw.astype(np.double), np.ones(len(raw), np.double))
+
+    spec = ROOT.TSpectrum(5)
+    nP   = spec.Search(h, 2, "goff", 0.2)
+    if nP > 0:
+        xp        = spec.GetPositionX()
+        rightmost = max(xp[i] for i in range(nP))
+    else:
+        rightmost = h.GetXaxis().GetBinCenter(h.GetMaximumBin())
+    print(f"  -> Ch {ch_id}: {nP} peak(s) in heater correlation; rightmost at {rightmost:.6f}.")
+
+    fit_window = max(0.0004, h.GetRMS() * 1.5)
+    fit = ROOT.TF1(f"fit_corr_heater_{ch_id}", "gaus",
+                   rightmost - fit_window, rightmost + fit_window)
+    fit.SetParameters(h.GetBinContent(h.GetXaxis().FindBin(rightmost)), rightmost, 0.0001)
+    # Log-likelihood fit ("L"): the low-amplitude heater pedestal inflates the
+    # histogram RMS (hence the fit window); a plain chi^2 fit then drifts off the
+    # narrow rightmost peak onto the pedestal. The likelihood fit (as used for the
+    # LY gaussians) locks onto the tall, narrow heater peak instead.
+    h.Fit(fit, "Q0 R L")
+
+    mean, sigma = fit.GetParameter(1), fit.GetParameter(2)
+    thr = mean + HEATER_CORR_NSIGMA * sigma
+
+    if thr > 1.0:
+        # Gaussian tail overshoots 1.0: use the first low-count bin of the tail.
+        max_bin    = h.GetMaximumBin()
+        thresh_cnt = h.GetBinContent(max_bin) * 0.05
+        thr = None
+        for b in range(max_bin, h.GetNbinsX() + 1):
+            if h.GetBinContent(b) <= thresh_cnt:
+                thr = h.GetXaxis().GetBinCenter(b)
+                break
+        if thr is None or thr > 1.0:
+            thr = fallback
+            print(f"  [!] Ch {ch_id}: heater cut > 1.0 and tail scan failed; "
+                  f"threshold falls back to {fallback:.6f}.")
+        else:
+            print(f"  [!] Ch {ch_id}: heater Gaussian cut > 1.0; using first "
+                  f"low-count bin at {thr:.6f}.")
+    else:
+        print(f">>> Ch {ch_id}: heater correlation threshold (mean+{HEATER_CORR_NSIGMA:g}sigma) = "
+              f"{thr:.6f} (mean={mean:.6f}, sigma={sigma:.6f}).")
+    return thr, h, fit
 
 
 def padded_view(x_arr, y_arr, x_pad_frac=0.45, y_pad_frac=0.55):
@@ -852,19 +1161,18 @@ class AlphaDoublet:
         self.hist = None;  self.fit = None;  self.ok = False
         self.mu_a = 0.0;   self.sig_a = 0.0          # alpha-particle peak (lower)
         self.mu_r = None;  self.sig_r = 0.0          # alpha+recoil peak (upper)
+        # Fit errors of the peak the analysis reports (see CreateDoubletBox).
+        self.mu_a_err = 0.0; self.sig_a_err = 0.0
+        self.mu_r_err = 0.0; self.sig_r_err = 0.0
 
 
-def _two_peaks(h, search_min=None, search_max=None):
+def _peak_candidates(h, search_min=None, search_max=None):
     """
-    The two genuine peaks of a histogram (alpha + alpha-recoil), sorted by x
-    (lower first), returned as (x, height).
-
-    Ranks candidates by topographic PROMINENCE -- the height of the (lightly
-    smoothed) peak above the local background on both sides -- NOT by integrated
-    area. Area favours the broad low-energy continuum; prominence keeps true,
-    structured peaks (which rise above their surroundings) and ignores flat
-    background fluctuations. The second peak is accepted only if it is clearly
-    significant, otherwise a single peak is returned.
+    Peak candidates of a histogram, ranked by topographic PROMINENCE -- the
+    height of the (lightly smoothed) peak above the local background on both
+    sides -- NOT by integrated area. Area favours the broad low-energy
+    continuum; prominence keeps true, structured peaks and ignores flat
+    background fluctuations. Returns [(x, prominence, height)], best first.
     """
     nb = h.GetNbinsX()
     ax = h.GetXaxis()
@@ -895,8 +1203,20 @@ def _two_peaks(h, search_min=None, search_max=None):
         cands.append((ax.GetBinCenter(b + 1), prom, height))
 
     cands.sort(key=lambda t: t[1], reverse=True)     # by prominence
+    return cands
+
+
+def _two_peaks(h, search_min=None, search_max=None):
+    """
+    The two genuine peaks of a histogram (alpha + alpha-recoil), sorted by x
+    (lower first), returned as (x, height).
+
+    The second peak is accepted only if it is clearly significant, otherwise a
+    single peak is returned.
+    """
+    ax = h.GetXaxis()
     keep, mind = [], (ax.GetXmax() - ax.GetXmin()) * 0.05
-    for t in cands:
+    for t in _peak_candidates(h, search_min, search_max):
         if t[1] <= 0: continue
         if not any(abs(t[0] - q[0]) < mind for q in keep):
             keep.append(t)
@@ -906,6 +1226,49 @@ def _two_peaks(h, search_min=None, search_max=None):
         keep = keep[:1]
     keep.sort(key=lambda t: t[0])
     return [(t[0], t[2]) for t in keep]
+
+
+def doublet_pair(h, search_min=None, search_max=None):
+    """
+    The two peaks of the alpha DOUBLET in *h*, as (x_low, x_high).
+
+    ANCHORED ON THE MOST PROMINENT candidate: one of the two lines is always the
+    dominant structure of the search region -- that is why the region is
+    searched there. Its partner is the candidate whose separation is CLOSEST TO
+    THE EXPECTED ONE (above or below it, within a factor DOUBLET_SEP_TOL): the
+    distance between the two lines is a physical constant, so it identifies the
+    partner far better than its prominence does. On ch57 the anchor (rough 5768)
+    has two candidates in band, a continuum bump 2.86 % below and the real
+    partner 2.02 % above; picking by prominence took the bump.
+
+    Ranking pairs by their COMBINED prominence instead lets two mediocre bumps
+    outscore the real line: on ch57 a pair of continuum fluctuations (5222 +
+    5338, prominences 13.3 + 12.8) beat the true alpha peak with its weaker
+    partner (5768 + 5848, 19.4 + 5.5) by half a unit, and the window was built
+    500 units away from the doublet.
+
+    Returns None when the anchor has no compatible partner (the caller then
+    falls back to the most prominent single peak).
+    """
+    cands = [c for c in _peak_candidates(h, search_min, search_max) if c[1] > 0]
+    if not cands:
+        return None
+    x0    = cands[0][0]                       # most prominent peak: the anchor
+    lo_f  = DOUBLET_SEP_REL / DOUBLET_SEP_TOL
+    hi_f  = DOUBLET_SEP_REL * DOUBLET_SEP_TOL
+    best  = None
+    for x, prom, _ in cands[1:]:
+        x1, x2 = sorted((x0, x))
+        if x2 <= 0:
+            continue
+        sep = (x2 - x1) / x2
+        if not (lo_f <= sep <= hi_f):
+            continue
+        # closest to the expected separation; prominence only breaks ties
+        score = (abs(sep - DOUBLET_SEP_REL), -prom)
+        if best is None or score < best[0]:
+            best = (score, x1, x2)
+    return (best[1], best[2]) if best else None
 
 
 def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=None):
@@ -936,7 +1299,7 @@ def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=Non
         return h
 
     # 1. coarse pass + 2. preliminary single fits
-    h0    = build(80)
+    h0    = build(DOUBLET_COARSE_BINS)
     peaks = _two_peaks(h0, search_min, search_max)
 
     def prelim(mu):
@@ -950,7 +1313,7 @@ def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=Non
         A1, m1, s1 = prelim(peaks[0][0])
         A2, m2, s2 = prelim(peaks[1][0])
         sig_ref = max(min(s1, s2), (win_hi - win_lo) * 0.004)
-        nb = int(np.clip(round((win_hi - win_lo) / (sig_ref / 4.0)), 40, 300))
+        nb = int(np.clip(round((win_hi - win_lo) / (sig_ref / DOUBLET_BIN_DIV)), 30, 300))
         h = build(nb); res.hist = h
         lo, hi = m1 - 3.5 * s1, m2 + 3.5 * s2
         ff = ROOT.TF1(tag, "gaus(0)+gaus(3)+pol1(6)", lo, hi)
@@ -962,19 +1325,22 @@ def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=Non
         res.fit = ff
         res.mu_a, res.sig_a = ff.GetParameter(1), abs(ff.GetParameter(2))
         res.mu_r, res.sig_r = ff.GetParameter(4), abs(ff.GetParameter(5))
+        res.mu_a_err, res.sig_a_err = ff.GetParError(1), ff.GetParError(2)
+        res.mu_r_err, res.sig_r_err = ff.GetParError(4), ff.GetParError(5)
         res.ok = True
     else:
         # Single-peak fallback: dominant peak only.
         peak_x, peak_y = find_dominant_peak(h0, search_min, search_max)
         A1, m1, s1 = prelim(peak_x)
         sig_ref = max(s1, (win_hi - win_lo) * 0.004)
-        nb = int(np.clip(round((win_hi - win_lo) / (sig_ref / 4.0)), 40, 300))
+        nb = int(np.clip(round((win_hi - win_lo) / (sig_ref / DOUBLET_BIN_DIV)), 30, 300))
         h = build(nb); res.hist = h
         ff = ROOT.TF1(tag, "gaus", m1 - 4 * s1, m1 + 4 * s1)
         ff.SetParameters(A1, m1, s1)
         h.Fit(ff, "Q0 R")
         res.fit = ff
         res.mu_a, res.sig_a = ff.GetParameter(1), abs(ff.GetParameter(2))
+        res.mu_a_err, res.sig_a_err = ff.GetParError(1), ff.GetParError(2)
         res.ok = True
 
     if res.sig_a <= 0:
@@ -1024,18 +1390,24 @@ def estimate_alpha_peak(amps, name):
 
 def AnalyzeLightYieldThallium(h_ly, name_ext):
     """
-    THALLIUM-selection LY analysis (ported from ThalliumStabilization.py).
+    Find and fit the thallium (and, if present, alpha) peak in an LY histogram.
 
-    Gamma events (the 208-Tl line) sit at the HIGH light yield; alphas, when
-    present, form a lower-LY companion. TSpectrum finds the peaks, ranked by area;
-    the two largest well-separated positive peaks are kept, the Tl one being the
-    HIGHER-LY of the two. A Gaussian fit gives the Tl mean/sigma and the acceptance
-    window [mu - LY_N_SIGMA*sig, mu + LY_N_SIGMA*sig] (lower bound moved to the
-    alpha/Tl valley when an alpha peak exists). Returns an LYResult; df_value is the
-    alpha-vs-Tl discrimination factor, used to pick the better light detector.
+    Workflow:
+      - TSpectrum peak search; rank candidates by integrated area and keep at
+        most two well-separated positive peaks.
+      - Gaussian fit of the thallium peak (and alpha, when two peaks survive).
+      - Discrimination factor DF = |mu_Tl - mu_alpha| / sqrt(sig_Tl^2+sig_alpha^2).
+      - Acceptance window: upper bound mu_Tl + LY_N_SIGMA*sig_Tl; lower bound the
+        alpha/thallium valley when alpha exists, else mu_Tl - LY_N_SIGMA*sig_Tl.
+
+    Operates on a ROOT histogram. Returns an LYResult.
     """
     res = LYResult()
-    xMin = h_ly.GetXaxis().GetXmin(); xMax = h_ly.GetXaxis().GetXmax()
+    print("=" * 50)
+    print(f"--- Peak Analysis {h_ly.GetTitle()} ---")
+
+    xMin = h_ly.GetXaxis().GetXmin()
+    xMax = h_ly.GetXaxis().GetXmax()
     hist_range = xMax - xMin
     fit_window = hist_range * 0.12
 
@@ -1044,74 +1416,190 @@ def AnalyzeLightYieldThallium(h_ly, name_ext):
     peakTl_X, peakAlpha_X = -999.0, -999.0
 
     if nPeaks > 0:
-        xpeaks_buf = spec.GetPositionX()
-        peaks_with_area, int_window = [], hist_range * 0.04
+        xpeaks_buf      = spec.GetPositionX()
+        peaks_with_area = []
+        int_window      = hist_range * 0.04
+
         for i in range(nPeaks):
             x_val = xpeaks_buf[i]
             if x_val <= 0.0: continue
-            b0 = h_ly.GetXaxis().FindBin(x_val - int_window)
-            b1 = h_ly.GetXaxis().FindBin(x_val + int_window)
-            peaks_with_area.append((x_val, h_ly.Integral(b0, b1)))
+            bin_min = h_ly.GetXaxis().FindBin(x_val - int_window)
+            bin_max = h_ly.GetXaxis().FindBin(x_val + int_window)
+            peaks_with_area.append((x_val, h_ly.Integral(bin_min, bin_max)))
+
         if not peaks_with_area:
+            # Only noise (non-positive peaks): fall back to the global maximum.
             peakTl_X = h_ly.GetXaxis().GetBinCenter(h_ly.GetMaximumBin())
+            print("  [!] Found only noise (negative peaks). Fallback on global maximum.")
         else:
+            # Keep the two largest, well-separated peaks; order them in x.
             peaks_with_area.sort(key=lambda p: p[1], reverse=True)
-            valid_peaks, min_dist = [], hist_range * 0.08
+            valid_peaks = []
+            min_dist    = hist_range * 0.08
             for p in peaks_with_area:
                 if not any(abs(p[0] - vp[0]) < min_dist for vp in valid_peaks):
                     valid_peaks.append(p)
                 if len(valid_peaks) == 2: break
-            valid_peaks.sort(key=lambda p: p[0])          # ascending LY
+            valid_peaks.sort(key=lambda p: p[0])
+
             if len(valid_peaks) == 2:
-                peakAlpha_X = valid_peaks[0][0]           # lower LY = alpha
-                peakTl_X    = valid_peaks[1][0]           # higher LY = thallium
+                peakAlpha_X, area_alpha = valid_peaks[0]
+                peakTl_X,   area_tl    = valid_peaks[1]
+                print(f"Found 2 positive peaks. Alpha at: {peakAlpha_X:.4f} (Area: {area_alpha:.0f}), "
+                      f"Thallium at: {peakTl_X:.4f} (Area: {area_tl:.0f})")
             else:
                 peakTl_X = valid_peaks[0][0]
+                print(f"Found 1 positive peak. Thallium at: {peakTl_X:.4f} (Area: {valid_peaks[0][1]:.0f})")
     else:
         peakTl_X = h_ly.GetXaxis().GetBinCenter(h_ly.GetMaximumBin())
 
     # --- Thallium Gaussian fit ----------------------------------------------
-    fit_Tl_min, fit_Tl_max = peakTl_X - fit_window, peakTl_X + fit_window
+    fit_Tl_min = peakTl_X - fit_window
+    fit_Tl_max = peakTl_X + fit_window
     if peakAlpha_X != -999.0:
+        # Narrow the fit toward the thallium side if alpha is close by.
         dist = peakTl_X - peakAlpha_X
         if dist < fit_window * 1.5:
             fit_Tl_min = peakTl_X - dist * 0.4
+
     res.fit_Tl = ROOT.TF1(f"fit_Tl_{name_ext}", "gaus", fit_Tl_min, fit_Tl_max)
     res.fit_Tl.SetLineColor(ROOT.kBlue)
     res.fit_Tl.SetParameters(h_ly.GetBinContent(h_ly.GetXaxis().FindBin(peakTl_X)),
-                             peakTl_X, (fit_Tl_max - fit_Tl_min) / 4.0)
+                              peakTl_X, (fit_Tl_max - fit_Tl_min) / 4.0)
     h_ly.Fit(res.fit_Tl, "Q0 R L")
-    mean_Tl, sigma_Tl = res.fit_Tl.GetParameter(1), abs(res.fit_Tl.GetParameter(2))
+
+    mean_Tl  = res.fit_Tl.GetParameter(1)
+    sigma_Tl = res.fit_Tl.GetParameter(2)
     mean_alpha, sigma_alpha = -999.0, 0.0
 
     # --- Alpha Gaussian fit + discrimination factor -------------------------
     if peakAlpha_X != -999.0:
-        fit_alpha_min, fit_alpha_max = peakAlpha_X - fit_window, peakAlpha_X + fit_window
+        fit_alpha_min = peakAlpha_X - fit_window
+        fit_alpha_max = peakAlpha_X + fit_window
         dist = peakTl_X - peakAlpha_X
         if dist < fit_window * 1.5:
             fit_alpha_max = peakAlpha_X + dist * 0.4
+
         res.fit_alpha = ROOT.TF1(f"fit_alpha_{name_ext}", "gaus", fit_alpha_min, fit_alpha_max)
         res.fit_alpha.SetLineColor(ROOT.kGreen + 2)
         res.fit_alpha.SetParameters(h_ly.GetBinContent(h_ly.GetXaxis().FindBin(peakAlpha_X)),
-                                    peakAlpha_X, (fit_alpha_max - fit_alpha_min) / 4.0)
+                                     peakAlpha_X, (fit_alpha_max - fit_alpha_min) / 4.0)
         h_ly.Fit(res.fit_alpha, "Q0+ R L")
-        mean_alpha, sigma_alpha = res.fit_alpha.GetParameter(1), abs(res.fit_alpha.GetParameter(2))
-        sigma_tot = math.sqrt(sigma_Tl**2 + sigma_alpha**2)
+
+        mean_alpha  = res.fit_alpha.GetParameter(1)
+        sigma_alpha = res.fit_alpha.GetParameter(2)
+        sigma_tot   = math.sqrt(sigma_Tl**2 + sigma_alpha**2)
         res.df_value = abs(mean_Tl - mean_alpha) / sigma_tot if sigma_tot > 0 else -1.0
-    else:
-        res.df_value = (abs(mean_Tl) / sigma_Tl) if sigma_Tl > 0 else -1.0
 
     # --- Acceptance window --------------------------------------------------
     res.cut_max      = mean_Tl + LY_N_SIGMA * sigma_Tl
     standard_cut_min = mean_Tl - LY_N_SIGMA * sigma_Tl
+
     if peakAlpha_X != -999.0 and res.fit_alpha is not None and (sigma_alpha + sigma_Tl) > 0:
+        # Lower bound at the sigma-weighted alpha/thallium valley, but never
+        # closer than 1.5 sigma to the thallium mean, nor below the standard cut.
         valley_point = (mean_alpha * sigma_Tl + mean_Tl * sigma_alpha) / (sigma_alpha + sigma_Tl)
         valley_point = min(valley_point, mean_Tl - 1.5 * sigma_Tl)
         res.cut_min  = max(valley_point, standard_cut_min)
     else:
         res.cut_min = standard_cut_min
+
+    print(f"  -> Calculated LY cuts for {name_ext}: [{res.cut_min:.4f}, {res.cut_max:.4f}]")
     return res
 
+
+def peak_significance(h, center, sigma):
+    """
+    How well the peak at *center* stands out of the local continuum, in standard
+    deviations: the excess over the background, divided by its Poisson
+    fluctuation. The peak region is center +/- PEAK_SIGNIF_NSIGMA*sigma and the
+    background is taken from two side bands of the same width, one on each side.
+    Returns 0.0 when it cannot be evaluated.
+    """
+    w = PEAK_SIGNIF_NSIGMA * abs(sigma)
+    if not (w > 0):
+        return 0.0
+    ax = h.GetXaxis()
+    band = lambda a, b: h.Integral(ax.FindBin(a), ax.FindBin(b))
+    n_peak = band(center - w, center + w)
+    n_side = band(center - 3 * w, center - w) + band(center + w, center + 3 * w)
+    bkg    = n_side / 2.0                      # side bands are twice the peak width
+    # Excess over ITS OWN fluctuation: sqrt(n_peak), not sqrt(background). With a
+    # nearly empty background the latter saturates at its floor and turns any
+    # handful of counts into a "significant" peak.
+    return (n_peak - bkg) / math.sqrt(max(n_peak, 1.0))
+
+def estimate_thallium_peak(amps, name):
+    """
+    Robust (center, sigma) of the thallium peak in an amplitude sample, via
+    FindThalliumPeak followed by a narrow Gaussian fit. Used on the COMBINED
+    (all-partition) spectrum to produce the search hint shared by every
+    partition. Returns (0.0, 0.0) when the sample is empty.
+    """
+    amps = np.asarray(amps, dtype=np.float64)
+    amps = amps[np.isfinite(amps)]
+    if amps.size < 1:
+        return 0.0, 0.0
+
+    bins, lo, hi = calcRobustLimitsAndBins(amps.tolist())
+    h = ROOT.TH1F(f"h_peakest_{name}", "peak estimate;Amplitude;Counts", bins, lo, hi)
+    h.SetDirectory(0)
+    h.FillN(amps.size, amps.astype(np.double), np.ones(amps.size, np.double))
+
+    peak_x, peak_y = find_dominant_peak(h)
+    fit_window = (hi - lo) * 0.1
+    f = ROOT.TF1(f"f_peakest_{name}", "gaus", peak_x - fit_window, peak_x + fit_window)
+    f.SetParameters(peak_y, peak_x, h.GetRMS() * 0.1)
+    h.Fit(f, "Q0 R L", "", peak_x - fit_window, peak_x + fit_window)
+
+    mean, sigma = f.GetParameter(1), f.GetParameter(2)
+    if sigma > fit_window or sigma <= 0:
+        mean, sigma = peak_x, h.GetRMS() * 0.1
+    return mean, sigma
+
+def chain_peak_interval(part_results, peak_nsigma=None):
+    """
+    Where the thallium peak is, and how wide, from the per-partition peaks the
+    stabilization has already fitted. Returns (frac_lo, frac_hi, res_exp):
+
+      frac            : half-width of the interval spanned by the partition peak
+                        regions (mu +/- CHAIN_PEAK_NSIGMA sigma), as a FRACTION of
+                        the mean peak position. Being a fraction, the same interval
+                        applies to every amplitude of the chain: each panel only
+                        needs its own peak position, no conversion factor. It is
+                        SYMMETRIC by construction (the wider of the two sides): the
+                        interval is built around the MEAN of the partition peaks,
+                        but is applied around each panel's own peak, and on a
+                        multi-modal spectrum that peak is the dominant mode, not the
+                        centre of the structure -- an asymmetric interval would then
+                        come out shifted, with the white margin on one side only.
+      mu_corr         : the peak position, in main-amplitude units.
+      res_exp         : the expected relative width (sigma/mu) of the COMBINED
+                        peak -- the width INSIDE a partition and the SPREAD between
+                        partition positions, added in quadrature. The spread is
+                        what broadens the un-stabilized amplitudes, and is exactly
+                        what the stabilization removes.
+
+    Both come from the peak the stabilization actually works on, so they are far
+    more reliable than anything measured over a window where the continuum
+    dominates. Falls back to (0, 0, CHAIN_SIG_TYPICAL) with no partition peak.
+    """
+    peaks = [(r.mean_amp_clean, abs(r.fit_clean.GetParameter(2)), max(r.n_clean, 1))
+             for r in part_results
+             if r.sufficient and r.fit_clean is not None and r.mean_amp_clean > 0]
+    if not peaks:
+        return 0.0, 0.0, CHAIN_SIG_TYPICAL
+    w_tot  = sum(n for _, _, n in peaks)
+    mu_avg = sum(m * n for m, _, n in peaks) / w_tot
+    if not (mu_avg > 0):
+        return 0.0, 0.0, CHAIN_SIG_TYPICAL
+    sig_in = sum(s * n for _, s, n in peaks) / w_tot
+    spread = math.sqrt(sum(n * (m - mu_avg) ** 2 for m, _, n in peaks) / w_tot)
+    nsig = CHAIN_PEAK_NSIGMA if peak_nsigma is None else peak_nsigma
+    lo = min(m - nsig * s for m, s, _ in peaks)
+    hi = max(m + nsig * s for m, s, _ in peaks)
+    frac = max(1.0 - lo / mu_avg, hi / mu_avg - 1.0, 0.0)
+    return frac, mu_avg, math.hypot(sig_in, spread) / mu_avg
 
 def fit_peak_optimized(amps, win_lo, win_hi, tag, center_hint=None):
     """
@@ -1171,16 +1659,25 @@ def estimate_peak_sigma(energies, center, tag):
     return s if s > 0 else None
 
 
-def fit_thallium_peak(energies, center, lo, hi, nb, sig_seed, tag):
+def fit_thallium_peak(energies, center, lo, hi, nb, sig_seed, tag,
+                      sigma_bounds=None):
     """
-    FINAL Tl-peak fit for the before/after comparison.
+    FINAL thallium-peak fit of the cross-check (ported from
+    ThalliumStabilization.py).
 
-    Histograms *energies* on the GIVEN shared axis (lo, hi, nb bins) -- so the
-    before and after spectra use the SAME range and binning -- and fits the Tl peak
-    with a Gaussian over a LINEAR background (gaus(0)+pol1(3)), the same peak +
-    continuum model as the alpha-peak fits. Seeded at *center* with width
-    *sig_seed*. The Gaussian parameters stay at indices 0,1,2, so CreateFitBox
-    reads mu/sigma directly. Returns (hist, fit) or (None, None).
+    Histograms *energies* on the GIVEN axis (lo, hi, nb bins) and fits the Tl
+    peak with a Gaussian over a FLAT background (gaus(0)+pol0(3)) using a
+    Poisson maximum-likelihood fit ("L", correct for low statistics, natively
+    handling empty bins). Seeded at *center* with width *sig_seed*. The Gaussian
+    parameters stay at indices 0,1,2, so CreateFitBox reads mu/sigma directly.
+
+    The background is flat and not linear: over a window this narrow the
+    continuum is nearly flat anyway, and a constant spends one parameter less on
+    the few counts around the line. A slope, on top of that, is free to go
+    NEGATIVE inside the window (its parameter is the intercept at x = 0, far
+    outside the fit range, so it cannot be bounded in any physical way).
+
+    Returns (hist, fit) or (None, None).
     """
     e = np.asarray(energies, np.float64)
     e = e[np.isfinite(e)]
@@ -1191,15 +1688,543 @@ def fit_thallium_peak(energies, center, lo, hi, nb, sig_seed, tag):
     nm = int(m.sum())
     if nm > 0:
         h.FillN(nm, e[m].astype(np.double), np.ones(nm, np.double))
-    seed = max(sig_seed, 1.0)
-    ff = ROOT.TF1(f"fit_{tag}", "gaus(0)+pol1(3)", lo, hi)
-    ff.SetParameters(max(h.GetMaximum(), 1.0), center, seed, 0.0, 0.0)
-    ff.SetParLimits(2, seed * 0.2, seed * 3.0)
+    seed  = max(sig_seed, 1.0)
+    h_max = max(h.GetMaximum(), 1.0)
+    ff = ROOT.TF1(f"fit_{tag}", "gaus(0)+pol0(3)", lo, hi)
+    ff.SetParameter(0, h_max); ff.SetParameter(1, center); ff.SetParameter(2, seed)
+    # Constrain the Gaussian so the minimiser cannot walk away from the peak:
+    #   [0] amplitude  > 0      -- otherwise it can flip NEGATIVE and "fit" a dip;
+    #   [1] mean       near the seeded centre -- the Tl line is known to sit there;
+    #   [2] width      inside an ABSOLUTE band -- keeps it on the PEAK and lets the
+    #                              constant take the continuum.
+    ff.SetParLimits(0, 0.0, 10.0 * h_max)
+    # The background level is a number of counts: it cannot be negative, and with
+    # few counts the fit does drive it below zero. Started from the edge bins.
+    _edge = 0.5 * (h.GetBinContent(1) + h.GetBinContent(nb))
+    ff.SetParameter(3, max(_edge, 1e-3))
+    ff.SetParLimits(3, 0.0, max(10.0 * h_max, 1.0))
+    ff.SetParLimits(1, center - TL_PEAK_MEAN_MAX_SHIFT * seed,
+                       center + TL_PEAK_MEAN_MAX_SHIFT * seed)
+    if sigma_bounds is not None:
+        # Explicit, ABSOLUTE width band: the plausible range for this line is
+        # known, so the bound does not depend on how good the seed is -- with a
+        # seed-derived bound an off seed pegs the width and every panel comes out
+        # with the same, meaningless resolution.
+        ff.SetParLimits(2, *sigma_bounds)
+    else:
+        ff.SetParLimits(2, seed * 0.2, seed * 3.0)
     # "L": Poisson maximum-likelihood fit -- the correct method for a low-statistics
     # histogram, natively accounting for empty bins (no need to weight them by hand).
     h.Fit(ff, "Q0 R L")
     return h, ff
 
+
+# ---------------------------------------------------------------------------
+# THALLIUM CHAIN: per-channel settings, window, results table
+# ---------------------------------------------------------------------------
+
+def rough_to_units(values, cal_rough, mask):
+    """
+    Scale factor k such that  values ~ k * cal_rough, as the median ratio over
+    the *mask* events. It converts a window given in ROUGH-calibration units
+    into the units of either chain variable, so both panels of the combined
+    canvas cover the same physical range on their own scale.
+    """
+    v, r = values[mask], cal_rough[mask]
+    good = np.isfinite(v) & np.isfinite(r) & (r > 0)
+    return float(np.median(v[good] / r[good])) if good.any() else 1.0
+
+
+class TlChainSettings:
+    """Settings of the thallium chain comparison for ONE channel."""
+    # The keys are the chain variables: the amplitude the alpha stabilization
+    # works on, and the same amplitude after it.
+    KEYS   = ("corrected", "alpha")
+    FIELDS = (*(f"win_scale_{k}" for k in KEYS), *(f"bin_div_{k}" for k in KEYS),
+              *(f"sig_scale_{k}" for k in KEYS),
+              "peak_nsigma", "sig_lo", "sig_hi")
+
+    def __init__(self, values=None):
+        d = dict(zip(self.FIELDS, [
+            *(list(TL_CHAIN_WIN_SCALE) + [1.0] * 2)[:2],
+            *(list(TL_CHAIN_BIN_DIV)   + [4.0] * 2)[:2],
+            *(list(TL_CHAIN_SIG_SCALE) + [1.0] * 2)[:2],
+            TL_CHAIN_PEAK_NSIGMA, TL_CHAIN_SIG_LO, TL_CHAIN_SIG_HI]))
+        if values:
+            for k in self.FIELDS:
+                if values.get(k) not in (None, ""):
+                    d[k] = float(values[k])
+        for k, v in d.items():
+            setattr(self, k, v)
+
+    def bin_div(self, key):
+        """Bin width (as sigma / this) of the chain variable *key*."""
+        return getattr(self, f"bin_div_{key}", 4.0)
+
+    def win_scale(self, key):
+        """Window widening of the chain variable *key*."""
+        return getattr(self, f"win_scale_{key}", 1.0)
+
+    def sig_scale(self, key):
+        """Scale of the EXPECTED width for the chain variable *key*."""
+        return getattr(self, f"sig_scale_{key}", 1.0)
+
+    def as_row(self, ch_id):
+        row = {"channel": ch_id}
+        row.update({k: getattr(self, k) for k in self.FIELDS})
+        return row
+
+
+def _apply_shared_corrected(cfg, ch_id):
+    """
+    Set BOTH chain panels from the thallium program's corrected-amplitude tuning.
+
+    That program fits the very same variable, so its per-channel tuning applies
+    here unchanged: taking it from there means the panels are tuned ONCE, in one
+    file, instead of drifting apart in two. The "_corrected" columns of
+    chain_settings.csv are used for the corrected-amplitude panel AND for the
+    alpha-stabilized one -- the two are the same line measured on the same
+    events, before and after, so there is no reason to frame or bin them
+    differently. Silently does nothing when the shared file or the channel's row
+    is missing.
+    """
+    if not (TL_SHARED_CHAIN_CSV and os.path.exists(TL_SHARED_CHAIN_CSV)):
+        return
+    try:
+        with open(TL_SHARED_CHAIN_CSV, newline="") as fh:
+            row = next((r for r in csv.DictReader(fh)
+                        if str(r.get("channel", "")).strip() == str(ch_id)), None)
+    except OSError as e:
+        print(f"  [!] Cannot read {TL_SHARED_CHAIN_CSV}: {e}", file=sys.stderr)
+        return
+    if row is None:
+        return
+    taken = []
+    for f in ("win_scale", "bin_div", "sig_scale"):
+        v = row.get(f"{f}_corrected")
+        if v not in (None, ""):
+            for key in TlChainSettings.KEYS:          # corrected AND alpha
+                setattr(cfg, f"{f}_{key}", float(v))
+            taken.append(f)
+    for f in ("peak_nsigma", "sig_lo", "sig_hi"):     # channel-level, not per-variable
+        v = row.get(f)
+        if v not in (None, ""):
+            setattr(cfg, f, float(v))
+            taken.append(f)
+    if taken:
+        print(f">>> Tl chain: ch {ch_id} seeded from "
+              f"{os.path.basename(TL_SHARED_CHAIN_CSV)} (corrected-amplitude "
+              f"column, both panels): {', '.join(taken)}.")
+
+
+def thallium_window(ch_id, res_csv_path):
+    """
+    The window the THALLIUM program fitted this channel's corrected-amplitude
+    panel in, as (win_frac, res_exp, mu), read from its results table. Returns
+    None when the table, the row, or the columns are not there -- the caller
+    then measures the window itself, as before.
+    """
+    if not os.path.exists(res_csv_path):
+        return None
+    try:
+        with open(res_csv_path, newline="") as fh:
+            for r in csv.DictReader(fh):
+                if (str(r.get("channel", "")).strip() != str(ch_id)
+                        or r.get("variable") != "corrected"
+                        or r.get("row") != "native"):
+                    continue
+                try:
+                    frac = float(r.get("win_frac", "nan"))
+                    rexp = float(r.get("res_exp", "nan"))
+                    mu   = float(r.get("mu", "nan"))
+                except (TypeError, ValueError):
+                    return None
+                if all(math.isfinite(x) and x > 0 for x in (frac, rexp, mu)):
+                    return frac, rexp, mu
+                return None
+    except OSError:
+        return None
+    return None
+
+
+
+
+def tl_chain_settings(ch_id):
+    """
+    Settings of the thallium chain for channel *ch_id*, from TL_CHAIN_CSV_PATH.
+
+    Same self-maintaining file as the thallium program: a channel with no row is
+    APPENDED with the values in use, existing rows are never rewritten (that is
+    what keeps hand-tuned values safe), and a file written before a new column
+    existed is upgraded in place with the program defaults.
+    """
+    rows, header, on_file = [], ["channel", *TlChainSettings.FIELDS], None
+    if os.path.exists(TL_CHAIN_CSV_PATH):
+        try:
+            with open(TL_CHAIN_CSV_PATH, newline="") as fh:
+                reader  = csv.DictReader(fh)
+                rows    = list(reader)
+                on_file = list(reader.fieldnames or [])
+        except OSError as e:
+            print(f"  [!] Cannot read {TL_CHAIN_CSV_PATH}: {e}", file=sys.stderr)
+
+    if on_file is not None and any(f not in on_file for f in header):
+        try:
+            upgraded = [TlChainSettings(r).as_row(str(r.get("channel", "")).strip())
+                        for r in rows]
+            with open(TL_CHAIN_CSV_PATH, "w", newline="") as fh:
+                w = csv.DictWriter(fh, fieldnames=header, extrasaction="ignore")
+                w.writeheader(); w.writerows(upgraded)
+            print(f">>> {os.path.basename(TL_CHAIN_CSV_PATH)} upgraded with the new "
+                  f"columns ({', '.join(f for f in header if f not in on_file)}).")
+        except OSError as e:
+            print(f"  [!] Cannot upgrade {TL_CHAIN_CSV_PATH}: {e}", file=sys.stderr)
+
+    mine = next((r for r in rows if str(r.get("channel", "")).strip() == str(ch_id)), None)
+
+    # The channel's OWN row wins: once it is on file it is the tuning for this
+    # channel, hand-edited or not, and nothing overwrites it.
+    if mine is not None and TL_USE_CHAIN_CSV:
+        cfg = TlChainSettings(mine)
+        print(f">>> Tl chain settings for ch {ch_id} read from "
+              f"{os.path.basename(TL_CHAIN_CSV_PATH)}.")
+        return cfg
+
+    # Channel not on file: seed EVERY parameter from the thallium program's
+    # corrected-amplitude column, for both panels, and write the row so it can
+    # be tuned from there on.
+    cfg = TlChainSettings(None)
+    _apply_shared_corrected(cfg, ch_id)
+    if mine is not None:                  # row there, but the CSV is disabled
+        return cfg
+
+    try:                                  # channel not on file yet: append it
+        with open(TL_CHAIN_CSV_PATH, "a", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=header)
+            if not rows and fh.tell() == 0:
+                w.writeheader()
+            w.writerow(cfg.as_row(ch_id))
+        print(f">>> Tl chain settings of ch {ch_id} added to "
+              f"{os.path.basename(TL_CHAIN_CSV_PATH)}.")
+    except OSError as e:
+        print(f"  [!] Cannot write {TL_CHAIN_CSV_PATH}: {e}", file=sys.stderr)
+    return cfg
+
+
+# Columns of the results CSV -- the SAME as ThalliumStabilization.py writes, so
+# PlotThalliumResolutions.py reads this table too (pass it with --csv).
+TL_RES_CSV_FIELDS = [
+    "channel", "step", "variable", "label", "row", "background",
+    "mu", "mu_err", "sigma", "sigma_err", "fwhm", "fwhm_err",
+    "resolution_pct", "resolution_err_pct",
+    "chi2", "ndf", "prob", "n_peak", "n_hist", "win_frac", "res_exp", "date",
+]
+
+
+def _tl_res_sort_key(r):
+    """Order of the results CSV: channel, then chain position, row."""
+    try:
+        ch = int(str(r.get("channel", "")).strip())
+    except (TypeError, ValueError):
+        ch = 1 << 30
+    try:
+        step = int(str(r.get("step", "")).strip())
+    except (TypeError, ValueError):
+        step = 1 << 30
+    return (ch, step, 0 if str(r.get("row", "")) == "native" else 1)
+
+
+def write_tl_resolution_csv(path, ch_id, new_rows):
+    """
+    Write this channel's fit results to the results CSV at *path*.
+
+    The file accumulates the whole detector: the rows of *ch_id* are REPLACED
+    (a re-analysis must not leave the old numbers behind) and every other
+    channel is kept as it is.
+    """
+    old = []
+    if os.path.exists(path):
+        try:
+            with open(path, newline="") as fh:
+                old = [r for r in csv.DictReader(fh)
+                       if str(r.get("channel", "")).strip() != str(ch_id)]
+        except OSError as e:
+            print(f"  [!] Cannot read {path}: {e}", file=sys.stderr)
+
+    rows = sorted(old + list(new_rows), key=_tl_res_sort_key)
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=TL_RES_CSV_FIELDS,
+                               restval="nan", extrasaction="ignore")
+            w.writeheader(); w.writerows(rows)
+        print(f">>> {len(new_rows)} Tl fit result(s) of ch {ch_id} written to "
+              f"{os.path.basename(path)} ({len(rows)} row(s) in total).")
+    except OSError as e:
+        print(f"  [!] Cannot write {path}: {e}", file=sys.stderr)
+
+
+def write_alpha_resolution_csv(path, ch_id, doublet_before, doublet_after):
+    """
+    Write the reported alpha peak (see doublet_metrics) BEFORE and AFTER the
+    stabilization, with the error on every value, the resolution included.
+    Replaces this channel's rows and leaves the others alone.
+    """
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def num(v, fmt="{:.6g}"):
+        return fmt.format(v) if (v is not None and math.isfinite(v)) else "nan"
+
+    new_rows = []
+    for step, (variable, label, d) in enumerate(
+            (("corrected", "Before alpha stabilization", doublet_before),
+             ("alpha_line", "After alpha stabilization",  doublet_after))):
+        m = doublet_metrics(d)
+        if m is None:
+            continue
+        new_rows.append({
+            "channel": ch_id, "step": step, "variable": variable, "label": label,
+            "row": "energy", "background": "pol1",
+            "mu": num(m["mu"]),       "mu_err": num(m["mu_err"]),
+            "sigma": num(m["sigma"]), "sigma_err": num(m["sigma_err"]),
+            "fwhm": num(m["fwhm"]),   "fwhm_err": num(m["fwhm_err"]),
+            "resolution_pct": num(m["res"], "{:.4f}"),
+            "resolution_err_pct": num(m["res_err"], "{:.4f}"),
+            "chi2": num(m["chi2"], "{:.3f}"), "ndf": m["ndf"],
+            "prob": num(m["prob"], "{:.4f}"),
+            "n_peak": "nan", "n_hist": "nan",
+            "win_frac": "nan", "res_exp": "nan",
+            "date": stamp,
+        })
+    if not new_rows:
+        return
+
+    old = []
+    if os.path.exists(path):
+        try:
+            with open(path, newline="") as fh:
+                old = [r for r in csv.DictReader(fh)
+                       if str(r.get("channel", "")).strip() != str(ch_id)]
+        except OSError as e:
+            print(f"  [!] Cannot read {path}: {e}", file=sys.stderr)
+
+    rows = sorted(old + new_rows, key=_tl_res_sort_key)
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=TL_RES_CSV_FIELDS,
+                               restval="nan", extrasaction="ignore")
+            w.writeheader(); w.writerows(rows)
+        print(f">>> Alpha-line results of ch {ch_id} written to "
+              f"{os.path.basename(path)} ({len(rows)} row(s) in total).")
+    except OSError as e:
+        print(f"  [!] Cannot write {path}: {e}", file=sys.stderr)
+
+
+def collect_tl_resolution_rows(ch_id, chain):
+    """One CSV row per fitted panel: the two rows of the canvas, per variable."""
+    stamp  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    panels = (("native", "h_zoom",   "fit_zoom"),
+              ("energy", "h_energy", "fit_energy"))
+
+    def num(v, fmt="{:.6g}"):
+        return fmt.format(v) if (v is not None and math.isfinite(v)) else "nan"
+
+    rows = []
+    for p in chain:
+        for row_name, hkey, fkey in panels:
+            m = fit_metrics(p.get(fkey), p.get(hkey))
+            if m is None:
+                continue
+            rows.append({
+                "channel": ch_id, "step": p["idx"], "variable": p["key"],
+                "label": p["label"], "row": row_name, "background": "pol0",
+                "mu": num(m["mu"]),           "mu_err": num(m["mu_err"]),
+                "sigma": num(m["sigma"]),     "sigma_err": num(m["sigma_err"]),
+                "fwhm": num(m["fwhm"]),       "fwhm_err": num(m["fwhm_err"]),
+                "resolution_pct": num(m["res"], "{:.4f}"),
+                "resolution_err_pct": num(m["res_err"], "{:.4f}"),
+                "chi2": num(m["chi2"], "{:.3f}"), "ndf": m["ndf"],
+                "prob": num(m["prob"], "{:.4f}"),
+                "n_peak": num(m["n_peak"], "{:.2f}"),
+                "n_hist": num(m["n_hist"], "{:.0f}"),
+                "win_frac": num(p["interval"][0], "{:.8f}"),
+                "res_exp":  num(p["interval"][1], "{:.8f}"),
+                "date": stamp,
+            })
+    return rows
+
+
+def fit_peak_centred(values, mu, tag, interval, cfg, key):
+    """
+    Fit the thallium peak of *values* with the recipe of ThalliumStabilization.py:
+
+      1. Take the peak position *mu* as given -- inside the selection window the
+         continuum can be taller than the line and a peak finder locks onto the
+         window edge, while the converted position is right to a fraction of a
+         per cent.
+      2. Frame it with the peak INTERVAL measured on the corrected amplitude
+         (*interval* = (frac, res_exp)): the window is mu*(1 -/+ frac), symmetric
+         so the peak keeps a white margin on BOTH sides. It is an ABSOLUTE
+         interval, taken where the line is unambiguous, so it contains the line
+         whatever the continuum does around it -- unlike a window built from the
+         locally measured width, which on a strong continuum comes out several
+         times too wide and lets the fit balloon over the background.
+      3. Bin it on the EXPECTED width (res_exp*mu), so the binning does not
+         depend on a local measurement either.
+      4. gaus(0)+pol0(3) Poisson-likelihood fit, the width bounded by
+         [sig_lo, sig_hi] x that expected width: that is what keeps the Gaussian
+         on the peak instead of letting it spread onto the continuum.
+
+    Returns (hist, fit, mu, sigma); (None, None, 0.0, 0.0) when it cannot fit.
+    """
+    if not (mu > 0):
+        return None, None, 0.0, 0.0
+
+    frac, res_exp = interval
+
+    # On the MAIN amplitude the position is already exact: *mu* is the peak
+    # measured on this very variable. Elsewhere it is converted, and the
+    # conversion factor is a median over a window the continuum dominates, so it
+    # can be a few per cent off -- too much for the fit to recover, its mean
+    # being bounded. There the peak is looked for in a BAND around it.
+    refine = (key != TL_CHAIN_MAIN_KEY)
+    if refine:
+        _lo_s, _hi_s = mu * (1.0 - TL_CHAIN_SEARCH_FRAC), mu * (1.0 + TL_CHAIN_SEARCH_FRAC)
+        _, _seed = fit_peak_optimized(values, _lo_s, _hi_s, f"{tag}_seed")
+        if _seed is not None and _lo_s < _seed.GetParameter(1) < _hi_s:
+            mu = _seed.GetParameter(1)
+
+    h = f = None
+    # TWO PASSES on the refined variables: the first window is centred on the
+    # converted position, the second on the peak that fit actually found. It is a
+    # refinement, not a search: the mean stays within TL_PEAK_MEAN_MAX_SHIFT
+    # sigmas of the centre, so the window cannot walk away onto the continuum.
+    n_pass = 2 if refine else 1
+    res_var = res_exp * cfg.sig_scale(key)
+    for _pass in range(n_pass):
+        sigma   = res_var * abs(mu)                # expected width in these units
+        sig_min = cfg.sig_lo * sigma
+        sig_max = cfg.sig_hi * sigma
+        if not (sig_max > sig_min > 0):
+            return None, None, 0.0, 0.0
+        if frac > 0.0:
+            lo, hi = mu * (1.0 - frac), mu * (1.0 + frac)
+        else:
+            lo, hi = mu - TL_CHAIN_WIN_NSIGMA * sigma, mu + TL_CHAIN_WIN_NSIGMA * sigma
+        nb = int(np.clip(round((hi - lo) / (sigma / cfg.bin_div(key))),
+                         TL_CHAIN_MIN_BINS, TL_CHAIN_MAX_BINS))
+        h, f = fit_thallium_peak(values, mu, lo, hi, nb, sigma,
+                                 tag if _pass == n_pass - 1 else f"{tag}_pre",
+                                 sigma_bounds=(sig_min, sig_max))
+        if f is None:
+            return None, None, 0.0, 0.0
+        if not (f.GetParameter(1) > 0):
+            break
+        mu = f.GetParameter(1)
+    return h, f, f.GetParameter(1), abs(f.GetParameter(2))
+
+
+def thallium_partition_peak(amps_p, ch_id, idx, peak_hint=None):
+    """
+    The thallium peak of ONE baseline partition, on the gamma events of that
+    partition. Lifted verbatim from the corresponding section of
+    process_partition() in ThalliumStabilization.py -- peak search restricted to
+    the combined-spectrum hint, local position adopted only when it is
+    significant over the continuum, preliminary Gaussian, cleaning at
+    +/-HEAT_CLEAN_NSIGMA, final Gaussian on the clean peak.
+
+    The stabilization itself is NOT run: here the partitions are stabilized on
+    the ALPHA line, and this is only the measurement chain_peak_interval() needs.
+    Returns a StabResult carrying the four fields it reads (sufficient,
+    mean_amp_clean, fit_clean, n_clean).
+    """
+    res = StabResult(idx, 0.0, 0.0)
+    amps_for_stab = np.asarray(amps_p, np.float64)
+    res.n_events  = len(amps_for_stab)
+    tag = f"tlpart_{ch_id}_p{idx}"
+    if res.n_events < 1:
+        return res
+    res.sufficient = True
+
+    bins_heat, heat_min, heat_max = calcRobustLimitsAndBins(amps_for_stab.tolist())
+    n_stab = len(amps_for_stab)
+
+    res.h_heat_orig = ROOT.TH1F(
+        f"h_tlheat_orig_{tag}",
+        f"Ch {ch_id} P{idx}: Tl spectrum after LY cut - Pre-cleaning;Amplitude;Counts",
+        bins_heat, heat_min, heat_max)
+    res.h_heat_orig.SetDirectory(0)
+    res.h_heat_orig.FillN(n_stab, amps_for_stab.astype(np.double),
+                          np.ones(n_stab, np.double))
+
+    search_min = search_max = None
+    if peak_hint is not None:
+        hint_center, hint_sigma = peak_hint
+        half_width = PEAK_HINT_NSIGMA * abs(hint_sigma)
+        search_min, search_max = hint_center - half_width, hint_center + half_width
+
+    peak_x, peak_y = find_dominant_peak(res.h_heat_orig, search_min, search_max)
+
+    if peak_hint is not None:
+        signif = peak_significance(res.h_heat_orig, peak_x, hint_sigma)
+        if signif < PEAK_SIGNIF_MIN:
+            peak_x = hint_center
+            peak_y = res.h_heat_orig.GetBinContent(
+                res.h_heat_orig.GetXaxis().FindBin(hint_center))
+            print(f"  -> Ch {ch_id} Tl P{idx}: local peak not significant "
+                  f"({signif:.1f} < {PEAK_SIGNIF_MIN} sigma, {n_stab} events); "
+                  f"position taken from the combined spectrum ({hint_center:.1f}).")
+        else:
+            print(f"  -> Ch {ch_id} Tl P{idx}: local peak at {peak_x:.1f} "
+                  f"({signif:.1f} sigma over the continuum, {n_stab} events).")
+
+    fit_window = (heat_max - heat_min) * 0.1
+    res.fit_prelim = ROOT.TF1(f"fit_tlprelim_{tag}", "gaus",
+                              peak_x - fit_window, peak_x + fit_window)
+    res.fit_prelim.SetParameters(peak_y, peak_x, res.h_heat_orig.GetRMS() * 0.1)
+    res.h_heat_orig.Fit(res.fit_prelim, "Q0 R L", "", peak_x - fit_window, peak_x + fit_window)
+
+    mean_heat_prelim  = res.fit_prelim.GetParameter(1)
+    sigma_heat_prelim = res.fit_prelim.GetParameter(2)
+    if sigma_heat_prelim > fit_window or sigma_heat_prelim <= 0:
+        mean_heat_prelim  = peak_x
+        sigma_heat_prelim = res.h_heat_orig.GetRMS() * 0.1
+
+    res.peak_x     = mean_heat_prelim
+    res.peak_sigma = sigma_heat_prelim
+
+    heat_cut_min = mean_heat_prelim - HEAT_CLEAN_NSIGMA * sigma_heat_prelim
+    heat_cut_max = mean_heat_prelim + HEAT_CLEAN_NSIGMA * sigma_heat_prelim
+
+    clean_amps_np = amps_for_stab[(amps_for_stab >= heat_cut_min)
+                                  & (amps_for_stab <= heat_cut_max)]
+    res.n_clean   = len(clean_amps_np)
+
+    params_clean = GetCenteredBinning(clean_amps_np.tolist(),
+                                      heat_min + (heat_max - heat_min) / 2.0)
+    res.h_heat_clean = ROOT.TH1F(
+        f"h_tlheat_clean_{tag}",
+        f"Ch {ch_id} P{idx}: Thallium Peak;Amplitude;Counts",
+        params_clean.bins, params_clean.vis_min, params_clean.vis_max)
+    res.h_heat_clean.SetDirectory(0)
+
+    if res.n_clean < PART_MIN_CLEAN_EVENTS:
+        print(f"  -> Ch {ch_id} Tl P{idx}: only {res.n_clean} event(s) left by the "
+              f"cleaning window (< {PART_MIN_CLEAN_EVENTS}); no local Tl peak.")
+        res.sufficient = False
+        return res
+
+    res.h_heat_clean.FillN(res.n_clean, clean_amps_np.astype(np.double),
+                           np.ones(res.n_clean, np.double))
+    res.fit_clean = ROOT.TF1(f"fit_tlclean_{tag}", "gaus",
+                             params_clean.median - 5.0 * params_clean.robust_sigma,
+                             params_clean.median + 5.0 * params_clean.robust_sigma)
+    res.fit_clean.SetParameters(res.h_heat_clean.GetMaximum(),
+                                params_clean.median, params_clean.robust_sigma)
+    res.h_heat_clean.Fit(res.fit_clean, "Q0 R L")
+    res.mean_amp_clean = res.fit_clean.GetParameter(1)
+    return res
 
 def evaluate_thallium_resolution(ch_id, ha, cal_rough, baseline, ld1_ly, ld2_ly,
                                  mask_main, apply_ly_cut, part_of_event, part_results,
@@ -1231,10 +2256,15 @@ def evaluate_thallium_resolution(ch_id, ha, cal_rough, baseline, ld1_ly, ld2_ly,
     res1 = res2 = None
     chosen_ld, ly_lo, ly_hi = 1, None, None
     if apply_ly_cut:
-        m_ly = mask_main & (cal_rough > TL_CAL_LY_MIN) & (cal_rough < TL_CAL_LY_MAX)
+        # Same window as ThalliumStabilization.py: on the RAW amplitude scaled by
+        # the conversion factor (mask_ly_range there), not on cal_rough directly.
+        # The two pick slightly different events, and the LY sigma -- hence the
+        # cut, hence the gamma selection -- came out different on every channel.
+        m_ly = (mask_main & (ha > TL_CAL_LY_MIN * conv_tl)
+                          & (ha < TL_CAL_LY_MAX * conv_tl))
         def _ly_hist(ly_arr, name):
             vals = ly_arr[m_ly & np.isfinite(ly_arr)]
-            if vals.size < 20:
+            if vals.size < 1:
                 return None, None
             nb, lo, hi = calcRobustLimitsAndBins(vals.tolist())
             h = ROOT.TH1F(name, f"Ch {ch_id}: {name};Light Yield;Counts", nb, lo, hi)
@@ -1245,7 +2275,15 @@ def evaluate_thallium_resolution(ch_id, ha, cal_rough, baseline, ld1_ly, ld2_ly,
         h_ly2, res2 = _ly_hist(ld2_ly, f"Tl_LD2_{ch_id}")
         df1 = res1.df_value if res1 else -1.0
         df2 = res2.df_value if res2 else -1.0
-        chosen_ld  = 2 if df2 > df1 else 1
+        # A detector that is not there gives LY = 0 for every event: excluded.
+        ok1 = ld_usable(ld1_ly[m_ly]) if apply_ly_cut else False
+        ok2 = ld_usable(ld2_ly[m_ly]) if apply_ly_cut else False
+        if ok1 and ok2:
+            chosen_ld = 2 if df2 > df1 else 1
+        elif ok1 or ok2:
+            chosen_ld = 1 if ok1 else 2
+        else:
+            chosen_ld = 1
         chosen_res = res2 if chosen_ld == 2 else res1
         if chosen_res is not None and chosen_res.cut_max > chosen_res.cut_min:
             ly_lo, ly_hi = chosen_res.cut_min, chosen_res.cut_max
@@ -1270,68 +2308,197 @@ def evaluate_thallium_resolution(ch_id, ha, cal_rough, baseline, ld1_ly, ld2_ly,
     print(f">>> Tl cross-check: {n_tl} Tl gamma events in raw window "
           f"[{stab_lo_raw:.0f}, {stab_hi_raw:.0f}] (conv {conv_tl:.4f}).")
 
-    # Both the BEFORE and the AFTER spectra are rescaled to the NOMINAL Tl energy
-    # before the final fit: a single alpha-point calibration through the origin is
-    # not enough (the energy-amplitude relation is non-linear), so the Tl line does
-    # NOT land exactly on 2614.5 keV in either spectrum. We therefore locate the Tl
-    # peak, rescale so it sits on TL_TARGET_ENERGY, and only then measure its width.
-    def _rescale_to_nominal(vals, tag):
-        """Find the Tl peak in *vals*, return vals rescaled so the peak -> nominal."""
-        _, lo, hi = calcRobustLimitsAndBins(vals.tolist())
-        _, f0 = fit_peak_optimized(vals, lo, hi, tag)
-        mu0 = f0.GetParameter(1) if f0 is not None else 0.0
-        if not (mu0 and mu0 > 0):
-            mu0 = float(np.median(vals))
-        return TL_TARGET_ENERGY * vals / mu0
+    # ======================================================================
+    # THALLIUM CHAIN  (combined-thallium canvas, as in ThalliumStabilization.py)
+    # ======================================================================
+    # One COLUMN per amplitude -- the corrected amplitude the alpha
+    # stabilization works on, and the same amplitude after it -- and three ROWS:
+    #   1. the Tl display range [TL_CHAIN_DISP_MIN, MAX] (rough units) converted
+    #      into the variable's own units -- the spectrum as it is;
+    #   2. the same data zoomed on the Tl peak, with the gaus+pol0 fit;
+    #   3. the same peak rescaled to TL_TARGET_ENERGY, so the two FWHMs are
+    #      directly comparable.
+    cfg = tl_chain_settings(ch_id)
 
-    # (3) BEFORE: corrected_amplitude -> rescale to nominal energy --------------
-    before_e = _rescale_to_nominal(amps_tl, f"tlb0_{ch_id}")
+    # WHERE the line is, and HOW WIDE -- from the per-partition thallium peaks,
+    # exactly as ThalliumStabilization.py derives them (chain_peak_interval).
+    # The partitions are the SAME ones (FindBaselinePartitions is the same
+    # search, byte for byte), so the peaks are fitted on the same event groups;
+    # only the selection differs -- the gammas picked here. A single free fit
+    # over the whole window is NOT used: on a channel with few gamma events it
+    # settles on the continuum instead of the line (ch57: 62 events gave
+    # sigma/mu = 2.72 % against the 0.47 % the thallium program measures).
+    peak_hint = estimate_thallium_peak(amps_tl, f"{ch_id}_tlcomb")
+    peak_hint = peak_hint if peak_hint[0] != 0.0 else None
+    if peak_hint is not None:
+        print(f">>> Combined-spectrum Tl peak hint at amplitude {peak_hint[0]:.1f} "
+              f"(sigma {peak_hint[1]:.1f}); used for all partitions.")
 
-    # (4) AFTER: SAME events, alpha-stabilized amplitude -> rescale to nominal ---
-    #     (same procedure as BEFORE: the single alpha-point calibration is not
-    #     enough, the energy-amplitude relation being non-linear).
+    n_part   = (int(part_of_event.max()) + 1) if part_of_event.size else 1
+    tl_parts = [thallium_partition_peak(ha[mask_tl & (part_of_event == i)],
+                                        ch_id, i, peak_hint)
+                for i in range(n_part)]
+    tl_frac, mu_main, res_exp = chain_peak_interval(tl_parts, cfg.peak_nsigma)
+    src = "measured here"
+    if not (mu_main > 0 and res_exp > 0):
+        print(f"  [!] Ch {ch_id}: the Tl line could not be measured on the "
+              f"corrected amplitude; cross-check skipped.")
+        return None
+
+    # <output>/AlphaStabilizationDebug/ch<N> -> <output>/, next to the stabilized
+    # ROOT files: where this program's results table goes, and the anchor the
+    # thallium table's relative path is resolved against.
+    res_dir = os.path.dirname(os.path.dirname(debug_ch_dir))
+
+    # Prefer the window the THALLIUM program fitted this very variable in: the
+    # corrected amplitude is the same quantity there, so reusing its interval
+    # makes the two "before" numbers the same measurement instead of two similar
+    # ones. win_frac on file already carries that program's win_scale_corrected,
+    # so it is divided out and re-applied per variable below -- the alpha panel
+    # then gets the same BASE window, widened by its own factor.
+    if TL_REUSE_THALLIUM_WINDOW:
+        _shared = thallium_window(ch_id, os.path.normpath(
+            os.path.join(res_dir, TL_THALLIUM_RES_CSV)))
+        if _shared is not None:
+            _frac, _rexp, _mu = _shared
+            _ws = cfg.win_scale("corrected") or 1.0
+            tl_frac, res_exp, mu_main = _frac / _ws, _rexp, _mu
+            src = "from the thallium results table"
+
+    print(f">>> Tl chain: peak at {mu_main:.1f}; window "
+          f"+/-{100 * tl_frac * cfg.win_scale('corrected'):.2f}%, expected width "
+          f"{100 * res_exp:.2f}% ({src}).")
+
+    # Per-event alpha-stabilized amplitude: each event corrected with the line of
+    # its own baseline partition (the quantity the output ROOT stores). Computed
+    # on the WHOLE sample, like the corrected amplitude, so both variables are
+    # full-length arrays and can be masked the same way.
     slopes = np.array([r.slope for r in part_results], dtype=np.float64)
     q0s    = np.array([r.q_0   for r in part_results], dtype=np.float64)
-    pe     = part_of_event[mask_tl]
     with np.errstate(divide='ignore', invalid='ignore'):
-        denom       = q0s[pe] + slopes[pe] * baseline[mask_tl]
-        after_stab  = alpha_target_energy * ha[mask_tl] / denom
-    after_stab = after_stab[np.isfinite(after_stab)]
-    after_e = _rescale_to_nominal(after_stab, f"tla0_{ch_id}") if after_stab.size >= 5 else None
+        amp_alpha = alpha_target_energy * ha / (q0s[part_of_event]
+                                                + slopes[part_of_event] * baseline)
 
-    # SHARED axis (equal range + binning) so the before/after peaks are directly
-    # comparable: window = nominal +/- 5*sigma_ref, bin width ~ sigma_ref/3, where
-    # sigma_ref is the BROADER of the two peaks (so both fit inside).
-    sig_b = estimate_peak_sigma(before_e, TL_TARGET_ENERGY, f"tlb_{ch_id}")
-    sig_a = estimate_peak_sigma(after_e,  TL_TARGET_ENERGY, f"tla_{ch_id}") if after_e is not None else None
-    sig_ref = max([s for s in (sig_b, sig_a) if s] or [15.0])
-    W       = 3.5 * sig_ref                                  # smaller window
-    tl_lo, tl_hi = TL_TARGET_ENERGY - W, TL_TARGET_ENERGY + W
-    tl_nb   = int(np.clip(round((tl_hi - tl_lo) / max(sig_ref / 6.0, 1e-9)), 12, 200))  # smaller bins
+    # (key, label, per-event values, x-axis title, colour)
+    chain_defs = [
+        ("corrected", "Corrected amplitude", ha,        "Amplitude (a.u.)", ROOT.kGray + 2),
+        ("alpha",     "Alpha stabilized",    amp_alpha, "Energy (keV)",     ROOT.kAzure + 2),
+    ]
+    # Conversion factor of the MAIN amplitude. Measured on m_conv -- correlation
+    # cut AND rough value inside the Tl window -- the same mask the conversion
+    # factor of the thallium program is measured on. Requiring the ROUGH value to
+    # be in the window matters: a merged run can carry runs whose rough
+    # calibration is off by an order of magnitude, and those events alone move
+    # the median enough to put the row-1 range on the wrong decade.
+    k_main = rough_to_units(ha, cal_rough, m_conv)
 
-    h_before, fit_before = fit_thallium_peak(before_e, TL_TARGET_ENERGY, tl_lo, tl_hi,
-                                             tl_nb, sig_b or sig_ref, f"tlbefore_{ch_id}")
-    h_after = fit_after = None
-    if after_e is not None:
-        h_after, fit_after = fit_thallium_peak(after_e, TL_TARGET_ENERGY, tl_lo, tl_hi,
-                                               tl_nb, sig_a or sig_ref, f"tlafter_{ch_id}")
+    chain = []
+    for i, (key, label, values, xtitle, colour) in enumerate(chain_defs):
+        # The panels are drawn on the GAMMA sample (correlation + thallium LY
+        # cut), not on the narrow window the peak was measured in: row 1 has to
+        # show the continuum around the line, and rows 2 and 3 get their window
+        # from the interval, not from a pre-selection.
+        sel = values[mask_gamma]
+        sel = sel[np.isfinite(sel)]
+        if sel.size < 5:
+            continue
 
-    def _summary(fit, label):
-        if fit is None or abs(fit.GetParameter(1)) < 1e-9:
+        k      = rough_to_units(values, cal_rough, m_conv)
+        lo, hi = TL_CHAIN_DISP_MIN * k, TL_CHAIN_DISP_MAX * k
+        h_full = ROOT.TH1F(f"h_tlchain_full_{ch_id}_{i}",
+                           f"Ch {ch_id}: {label};{xtitle};Counts",
+                           TL_CHAIN_FULL_BINS, lo, hi)
+        h_full.SetDirectory(0)
+        h_full.FillN(sel.size, sel.astype(np.double), np.ones(sel.size, np.double))
+
+        # Where the line sits in these units: the measured peak converted with
+        # this variable's factor. Given to the fit, not searched for.
+        mu_exp   = mu_main * k / k_main if k_main > 0 else 0.0
+        interval = (tl_frac * cfg.win_scale(key), res_exp)
+        h_zoom, fit_zoom, mu, _ = fit_peak_centred(
+            sel, mu_exp, f"h_tlchain_zoom_{ch_id}_{i}", interval, cfg, key)
+        if h_zoom is not None:
+            h_zoom.SetTitle(f"Ch {ch_id}: {label} - peak;{xtitle};Counts")
+
+        chain.append(dict(
+            idx=i, key=key, label=label, colour=colour, h_full=h_full,
+            interval=interval, h_zoom=h_zoom, fit_zoom=fit_zoom,
+            energy=(TL_TARGET_ENERGY * sel / mu) if mu > 0 else None,
+            ))
+
+    # --- row 3: the same peaks, in energy ------------------------------------
+    # Each sample rescaled so its peak sits on TL_TARGET_ENERGY, then fitted with
+    # the SAME routine as row 2: the panel is row 2 on the energy scale, so the
+    # two rows always agree and the two amplitudes can be compared directly.
+    for p in chain:
+        p["h_energy"], p["fit_energy"] = None, None
+        if p["energy"] is None:
+            continue
+        p["h_energy"], p["fit_energy"], _, _ = fit_peak_centred(
+            p["energy"], TL_TARGET_ENERGY, f"h_tlchain_energy_{ch_id}_{p['idx']}",
+            p["interval"], cfg, p["key"])
+        if p["h_energy"] is not None:
+            p["h_energy"].SetTitle(
+                f"Ch {ch_id}: {p['label']} - energy;Energy (keV);Counts")
+
+    def _summary(p, label):
+        m = fit_metrics(p.get("fit_energy"), p.get("h_energy")) if p else None
+        if m is None or not math.isfinite(m["res"]):
             return None
-        mu, sg = fit.GetParameter(1), abs(fit.GetParameter(2))
-        fwhm   = SIGMA_TO_FWHM * sg
-        pct    = 100.0 * fwhm / abs(mu)
-        print(f">>> Tl {label}: mu={mu:.1f} keV, FWHM={fwhm:.2f} keV ({pct:.2f} %)")
-        return dict(mu=mu, sigma=sg, fwhm=fwhm, res_pct=pct)
+        print(f">>> Tl {label}: mu={m['mu']:.1f} keV, FWHM={m['fwhm']:.2f} keV "
+              f"({m['res']:.2f} +/- {m['res_err']:.2f} %)")
+        return dict(mu=m["mu"], sigma=m["sigma"], fwhm=m["fwhm"],
+                    res_pct=m["res"], res_err_pct=m["res_err"])
 
-    r_before = _summary(fit_before, "BEFORE alpha stab.")
-    r_after  = _summary(fit_after,  "AFTER  alpha stab.")
+    p_before = next((p for p in chain if p["key"] == "corrected"), None)
+    p_after  = next((p for p in chain if p["key"] == "alpha"), None)
+    r_before = _summary(p_before, "BEFORE alpha stab.")
+    r_after  = _summary(p_after,  "AFTER  alpha stab.")
+
+    # --- results table --------------------------------------------------------
+    if TL_SAVE_RES_CSV and chain:
+        rows = collect_tl_resolution_rows(ch_id, chain)
+        if rows:
+            write_tl_resolution_csv(os.path.join(res_dir, TL_RES_CSV_NAME),
+                                    ch_id, rows)
 
     if not save_jpeg:
         return dict(before=r_before, after=r_after, conv_tl=conv_tl, n_tl=n_tl)
 
     os.makedirs(debug_ch_dir, exist_ok=True)
+
+    # ---- IMAGE: the combined-thallium canvas (3 rows x 2 columns) ----------
+    n_col = len(chain)
+    if n_col > 0:
+        c_ch = ROOT.TCanvas(f"c_tlcomb_{ch_id}",
+                            f"Combined Thallium Peak Ch {ch_id}",
+                            600 * n_col, 1350)
+        c_ch.Divide(n_col, 3)
+
+        def _draw(pad, h, fit, header, colour):
+            c_ch.cd(pad); ROOT.gPad.SetGrid()
+            if h is None:
+                return
+            h.SetStats(0); h.SetLineColor(ROOT.kBlack)
+            h.SetFillColorAlpha(colour, 0.5); h.Draw()
+            if fit is None:                 # first row: spectrum only
+                return
+            fit.SetLineColor(ROOT.kBlue); fit.SetLineWidth(2); fit.Draw("same")
+            box = CreateFitBox(fit, header, colour,
+                               x1=0.13, y1=0.64, x2=0.40, y2=0.85, text_size=0.026)
+            box.Draw(); keep.append(box)
+
+        for col, p in enumerate(chain):
+            _draw(col + 1,             p["h_full"],   None,            p["label"], p["colour"])
+            _draw(n_col + col + 1,     p["h_zoom"],   p["fit_zoom"],   p["label"], p["colour"])
+            _draw(2 * n_col + col + 1, p["h_energy"], p["fit_energy"],
+                  f"{p['label']} (energy)", p["colour"])
+            keep.extend([p["h_full"], p["h_zoom"], p["fit_zoom"],
+                         p["h_energy"], p["fit_energy"]])
+
+        c_ch.Update()
+        save_canvas_jpeg(c_ch, os.path.join(
+            debug_ch_dir, f"ch{ch_id}_combined_thallium{calib_suffix}.jpg"))
 
     # ---- IMAGE 1: thallium global overview (6 pads) ------------------------
     c1 = ROOT.TCanvas(f"c_tl_glob_{ch_id}", f"Tl Overview Ch {ch_id}", 500 * 3, 400 * 2)
@@ -1386,7 +2553,7 @@ def evaluate_thallium_resolution(ch_id, ha, cal_rough, baseline, ld1_ly, ld2_ly,
                     lc = ROOT.TLine(xv, 0, xv, ROOT.gPad.GetUymax())
                     lc.SetLineColor(ROOT.kBlue); lc.SetLineWidth(2); lc.SetLineStyle(2)
                     lc.Draw("same"); keep.append(lc)
-            box = CreateLYBox(rr, tag) if (rr and rr.fit_Tl) else None
+            box = CreateLYBoxThallium(rr, tag) if (rr and rr.fit_Tl) else None
             if box: box.Draw(); keep.append(box)
             keep.append(hh)
 
@@ -1403,40 +2570,35 @@ def evaluate_thallium_resolution(ch_id, ha, cal_rough, baseline, ld1_ly, ld2_ly,
     save_canvas_jpeg(c1, os.path.join(debug_ch_dir,
                      f"ch{ch_id}_thallium_overview{calib_suffix}.jpg"))
 
-    # ---- IMAGE 2: before/after comparison (2 pads) -------------------------
-    c2 = ROOT.TCanvas(f"c_tl_cmp_{ch_id}", f"Tl before/after Ch {ch_id}", 1400, 600)
-    c2.Divide(2, 1)
-
-    c2.cd(1); ROOT.gPad.SetGrid()
-    if h_before is not None:
-        h_before.SetStats(0)
-        h_before.SetTitle(f"Ch {ch_id}: Tl BEFORE alpha stab. (rescaled);Energy (keV);Counts")
-        h_before.SetLineColor(ROOT.kBlack); h_before.SetFillColorAlpha(ROOT.kGray, 0.5); h_before.Draw()
-        if fit_before: fit_before.SetLineColor(ROOT.kBlue); fit_before.Draw("same")
-        box_b = CreateFitBox(fit_before, "Tl BEFORE alpha stab.", ROOT.kGray + 2,
-                             x1=0.14, y1=0.68, x2=0.42, y2=0.88, text_size=0.026)
-        box_b.Draw(); keep.append(box_b); keep.append(h_before)
-
-    c2.cd(2); ROOT.gPad.SetGrid()
-    if h_after is not None:
-        h_after.SetStats(0)
-        h_after.SetTitle(f"Ch {ch_id}: Tl AFTER alpha stab.;Energy (keV);Counts")
-        h_after.SetLineColor(ROOT.kBlack); h_after.SetFillColorAlpha(ROOT.kRed, 0.4); h_after.Draw()
-        if fit_after: fit_after.SetLineColor(ROOT.kBlue); fit_after.Draw("same")
-        box_a = CreateFitBox(fit_after, "Tl AFTER alpha stab.", ROOT.kRed + 1,
-                             x1=0.14, y1=0.68, x2=0.42, y2=0.88, text_size=0.026)
-        box_a.Draw(); keep.append(box_a); keep.append(h_after)
-
-    c2.Update()
-    save_canvas_jpeg(c2, os.path.join(debug_ch_dir,
-                     f"ch{ch_id}_thallium_before_after{calib_suffix}.jpg"))
-
     return dict(before=r_before, after=r_after, conv_tl=conv_tl, n_tl=n_tl)
 
 
 # ===========================================================================
 # BASELINE PARTITIONING
 # ===========================================================================
+
+def _bin_runs(mask, min_gap):
+    """
+    Runs of True bins in *mask*, as [start, end] pairs (0-based, inclusive),
+    with runs separated by fewer than *min_gap* False bins merged together --
+    the same "a separation must be at least min_gap bins wide" rule the block
+    search uses, so a couple of empty bins inside a population do not split it.
+    """
+    runs = []
+    i, n = 0, len(mask)
+    while i < n:
+        if mask[i]:
+            j = i
+            while j < n and mask[j]:
+                j += 1
+            if runs and (i - runs[-1][1] - 1) < min_gap:
+                runs[-1][1] = j - 1
+            else:
+                runs.append([i, j - 1])
+            i = j
+        else:
+            i += 1
+    return runs
 
 def FindBaselinePartitions(baseline_vals, ch_id, enabled=True):
     """
@@ -1548,6 +2710,29 @@ def FindBaselinePartitions(baseline_vals, ch_id, enabled=True):
     block_ends   = [g[0] - 1 for g in gaps] + [last]
     blocks       = [[s, e] for s, e in zip(block_starts, block_ends)]
 
+    # --- Recover populations too LOW for the relative threshold -------------
+    # The threshold above is a fraction of the TALLEST bin, and that comparison
+    # is scale-dependent: a narrow, very tall main peak (a quiet channel whose
+    # baseline histogram spans a wide range because of a second level) makes 3 %
+    # of the maximum taller than an ENTIRE secondary population. On ch86 a block
+    # of ~30 % of the events, five units of baseline away, sat below it and was
+    # swallowed by the outer partition.
+    # What makes a population negligible is how many EVENTS it holds, not how
+    # tall its bins are, so the histogram is scanned again with a threshold low
+    # enough to see any real cluster, and a run that does not overlap a block
+    # already found is kept when its integral passes the same PART_MIN_BLOCK_FRAC
+    # test the blocks are judged by. Nothing already found can be lost here: the
+    # step only ADDS blocks.
+    warm = c > PART_WARM_MIN_COUNTS
+    for w_start, w_end in _bin_runs(warm, PART_MIN_GAP_BINS):
+        if any(w_start <= b[1] and b[0] <= w_end for b in blocks):
+            continue                                  # already inside a block
+        if float(c[w_start:w_end + 1].sum()) < PART_MIN_BLOCK_FRAC * max(
+                float(c[b[0]:b[1] + 1].sum()) for b in blocks):
+            continue                                  # negligible: a few strays
+        blocks.append([w_start, w_end])
+    blocks.sort()
+
     # --- Absorb small isolated blocks into the nearest one ------------------
     # A block is "major" when it holds at least PART_MIN_BLOCK_FRAC of the most
     # populated block's counts. Minor blocks (small isolated peaks) are merged
@@ -1599,35 +2784,20 @@ def FindBaselinePartitions(baseline_vals, ch_id, enabled=True):
 # ===========================================================================
 
 
-def robust_line(bases, amps, mad_trim=5.0, max_pairs_points=700):
+def robust_line(bases, amps, max_pairs_points=700):
     """
-    Robust linear fit  amplitude = q0 + slope * baseline  that represents the BULK
-    of the points and is immune to high-leverage BASELINE outliers (an isolated
-    point far from the baseline cluster drags an ordinary or residual-trimmed fit
-    toward itself precisely because of its leverage).
+    Linear fit  amplitude = q0 + slope * baseline  over ALL the clean points:
+    Theil-Sen estimate, slope = median of all pairwise slopes, q0 = median(a -
+    slope*b). Parameter-free.
 
-    Steps: (1) drop points whose baseline is more than *mad_trim* MADs from the
-    baseline median (leverage outliers) -- for the FIT only, the events stay in
-    the spectrum; (2) Theil-Sen estimate: slope = median of all pairwise slopes,
-    q0 = median(a - slope*b). Parameter-free, ~29% breakdown.
-    Returns (q0, slope, trimmed_mask); trimmed_mask is over the ORIGINAL input.
+    NO point is excluded: every clean event of the partition enters the line.
+    Returns (q0, slope).
     """
     b0 = np.asarray(bases, np.float64); a0 = np.asarray(amps, np.float64)
-    trimmed = np.zeros(b0.size, dtype=bool)     # True = leverage outlier (not fitted)
     ok = np.isfinite(b0) & np.isfinite(a0)
     b, a = b0[ok], a0[ok]
     if b.size < 2:
-        return (float(np.median(a)) if a.size else 0.0), 0.0, trimmed
-    bmed = np.median(b); mad = np.median(np.abs(b - bmed)) * 1.4826
-    keep = np.ones(b.size, dtype=bool)
-    if mad > 0:
-        cand = np.abs(b - bmed) <= mad_trim * mad
-        if cand.sum() >= max(4, int(0.5 * b.size)):
-            keep = cand
-    # record the trimmed leverage outliers on the ORIGINAL input (for the scatter)
-    idx_ok = np.flatnonzero(ok)
-    trimmed[idx_ok[~keep]] = True
-    b, a = b[keep], a[keep]
+        return (float(np.median(a)) if a.size else 0.0), 0.0
     # subsample when large: the pairwise-slope set is O(n^2)
     if b.size > max_pairs_points:
         idx = np.random.default_rng(12345).choice(b.size, max_pairs_points, replace=False)
@@ -1637,10 +2807,10 @@ def robust_line(bases, amps, mad_trim=5.0, max_pairs_points=700):
     i, j = np.triu_indices(bs.size, 1)
     db = bs[j] - bs[i]; m = np.abs(db) > 0
     if not m.any():
-        return float(np.median(a)), 0.0, trimmed
+        return float(np.median(a)), 0.0
     slope = float(np.median((as_[j] - as_[i])[m] / db[m]))
     q0    = float(np.median(a - slope * b))
-    return q0, slope, trimmed
+    return q0, slope
 
 
 class StabResult:
@@ -1682,7 +2852,6 @@ class StabResult:
         self.h_heat_clean         = None   # clean peak BEFORE stabilization
         self.fit_clean            = None
         self.g_heat_vs_base_clean = None   # amplitude vs baseline + linear fit
-        self.g_heat_vs_base_trim  = None   # leverage outliers excluded from the line
         self.fit_brange           = None   # (min,max) baseline of the points used in the line
         self.f1                   = None   # FITTED line (red, always computed)
         self.f1_ext               = None   # EXTERNAL line (blue, when applied)
@@ -1737,6 +2906,14 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
         return res
     res.sufficient = True
 
+    # Keep ALL stab-window events (full doublet: alpha + recoil) and baselines,
+    # so the combined BEFORE/AFTER image can fit BOTH peaks (clean_amps holds only
+    # the alpha-only core used for the stabilization reference). Set HERE, before
+    # anything can bail out, so a partition that gets no line of its own still
+    # feeds the combined spectra.
+    res.all_amps  = np.asarray(amps_for_stab, np.float64)
+    res.all_bases = np.asarray(bases_for_stab, np.float64)
+
     # --- alpha-doublet fit (locate the alpha-particle peak in this partition) --
     bins_heat, heat_min, heat_max = calcRobustLimitsAndBins(amps_for_stab.tolist())
     n_stab = len(amps_for_stab)
@@ -1785,9 +2962,20 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
         f"Ch {ch_id} P{idx}: Alpha Peak AFTER stabilization;Amplitude;Counts",
         params_clean.bins, params_clean.vis_min, params_clean.vis_max)
 
-    if res.n_clean > 0:
-        res.h_heat_clean.FillN(res.n_clean, clean_amps_np.astype(np.double),
-                               np.ones(res.n_clean, np.double))
+    # A partition whose cleaning window keeps (almost) nothing cannot be fitted:
+    # give up on it here, leaving slope == q_0 == 0 so that run_stabilization makes
+    # it inherit the nearest fitted partition's line. Going on would build a TGraph
+    # with zero points, which the ROOT bindings reject (and crash on, on some
+    # builds), and would fit an empty histogram.
+    if res.n_clean < PART_MIN_CLEAN_EVENTS:
+        print(f"  -> Ch {ch_id} P{idx}: only {res.n_clean} event(s) left by the "
+              f"cleaning window (< {PART_MIN_CLEAN_EVENTS}); no local line, it will "
+              f"inherit the nearest partition's.")
+        res.sufficient = False
+        return res
+
+    res.h_heat_clean.FillN(res.n_clean, clean_amps_np.astype(np.double),
+                           np.ones(res.n_clean, np.double))
 
     res.g_heat_vs_base_clean = ROOT.TGraph(res.n_clean,
                                            clean_bases_np.astype(np.double),
@@ -1814,33 +3002,15 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
     res.clean_amps  = clean_amps_np
     res.clean_bases = clean_bases_np
 
-    # Keep ALL stab-window events (full doublet: alpha + recoil) and baselines,
-    # so the combined BEFORE/AFTER image can fit BOTH peaks (clean_amps holds only
-    # the alpha-only core used for the stabilization reference).
-    res.all_amps  = amps_for_stab
-    res.all_bases = bases_for_stab
-
     # --- robust pol1 fit: ALWAYS computed (shown in red for comparison) -----
     fit_slope, fit_q0 = 0.0, res.mean_amp_clean
     if res.g_heat_vs_base_clean.GetN() > 3:
-        # Robust (Theil-Sen + leverage-outlier trim) line: represents the bulk of
-        # the points and is not dragged by a single baseline outlier outside the
-        # cluster (unlike a residual-trimmed rob= fit). The leverage outliers are
-        # excluded from the LINE ONLY (they are still stabilized as normal events);
-        # they are drawn in a distinct colour on the scatter.
-        fit_q0, fit_slope, trim = robust_line(clean_bases_np, clean_amps_np)
+        # Theil-Sen line over ALL the clean points of the partition: no event is
+        # excluded from the fit.
+        fit_q0, fit_slope = robust_line(clean_bases_np, clean_amps_np)
         res.f1 = ROOT.TF1(f"f1_{tag}", "pol1")
         res.f1.SetParameters(fit_q0, fit_slope)
-        kept = ~trim
-        if kept.any():
-            res.fit_brange = (float(clean_bases_np[kept].min()),
-                              float(clean_bases_np[kept].max()))
-        n_trim = int(trim.sum())
-        if n_trim > 0:
-            res.g_heat_vs_base_trim = ROOT.TGraph(
-                n_trim, clean_bases_np[trim].astype(np.double),
-                clean_amps_np[trim].astype(np.double))
-            res.g_heat_vs_base_trim.SetName(f"g_heat_vs_base_trim_{tag}")
+        res.fit_brange = (float(clean_bases_np.min()), float(clean_bases_np.max()))
 
     # --- line actually APPLIED ---------------------------------------------
     # External SLOPE-ONLY mode: reuse only the external slope (baseline-drift
@@ -2127,6 +3297,7 @@ def run_stabilization(
     tree_ly   = file.Get("LY")
             
     tree_time = file.Get("timestamp")   # heat_timefromstartrun (baseline-vs-time plot)
+    tree_heater = file.Get("flagpropagator_heater")   # heater flag (pulser events)
     # Optimum-filter tree, also used to compute the LY when the 'LY' tree is gone.
     tree_opt  = tree_main if main_tree_name == AMP_TREE_OPTIMUM else file.Get(AMP_TREE_OPTIMUM)
 
@@ -2139,7 +3310,7 @@ def run_stabilization(
     # pointer (not Python None), so it must be filtered with _valid_tree. The
     # LY tree and the optimum-filter tree (LY ratio fallback) are included too.
     candidate_friends = [tree_mod, tree_bad, tree_trig, tree_corr, tree_cal,
-                         tree_baseline, tree_ly, tree_opt, tree_time]
+                         tree_baseline, tree_ly, tree_opt, tree_time, tree_heater]
     already     = {tree_for_stabilization.GetName()}
     friend_list = []
     for t in candidate_friends:
@@ -2241,8 +3412,23 @@ def run_stabilization(
         rdf_f = rdf_f.Define("_time_", time_expr)
         print(f">>> Baseline-vs-time scatter: using 'timestamp.{time_leaf}'.")
 
+    # --- Heater (pulser) events ---------------------------------------------
+    # The pulser fires at a FIXED amplitude, so it makes a razor-thin peak that
+    # can sit anywhere -- on ch57 it lands at rough 5315, inside the alpha search
+    # region, where it is 85 % of the events. The window search then centres on
+    # it, the stabilization anchors to it, and the two real alpha peaks (rough
+    # ~5760 / ~5840 there) are never seen. Pulser events are not physics: they
+    # are dropped from the whole analysis.
+    # Leaf named "IsHeater" or "heat_IsHeater" depending on the production.
+    heater_flag_leaf = next((lf for lf in ("IsHeater", "heat_IsHeater")
+                             if tree_for_stabilization.GetLeaf(lf)), None)
+    if heater_flag_leaf:
+        rdf_f = rdf_f.Define("_is_heater_", heater_flag_leaf)
+
     # --- Columns to read ----------------------------------------------------
     cols = ["heat_amplitude", "_cal_rough_", "heat_correlation", "heat_baseline"]
+    if heater_flag_leaf:
+        cols.append("_is_heater_")
     if has_time:
         cols.append("_time_")
     if apply_ly_cut:
@@ -2271,6 +3457,8 @@ def run_stabilization(
     corr      = np_data["heat_correlation"][:N].astype(np.float64)
     baseline  = np_data["heat_baseline"][:N].astype(np.float64)
     time_fsr  = np_data["_time_"][:N].astype(np.float64) if has_time else None
+    is_heater = (np_data["_is_heater_"][:N].astype(np.int32) == 1
+                 if heater_flag_leaf else np.zeros(N, bool))
 
     # Light Yield read DIRECTLY from the LD1_LY / LD2_LY leaves.
     ld1_ly   = np_data["_ld1_ly_"][:N].astype(np.float64)       if apply_ly_cut     else np.zeros(N, np.float64)
@@ -2282,6 +3470,7 @@ def run_stabilization(
     ha        = ha[valid];   cal_rough = cal_rough[valid]
     corr      = corr[valid]; baseline = baseline[valid]
     ld1_ly    = ld1_ly[valid]; ld2_ly = ld2_ly[valid]
+    is_heater = is_heater[valid]
     if time_fsr is not None:
         time_fsr = time_fsr[valid]   # keep the time vector aligned with baseline
     N = len(ha)
@@ -2289,13 +3478,32 @@ def run_stabilization(
     # ======================================================================
     # DYNAMIC CORRELATION CUT  (vectorised)
     # ======================================================================
-    mask_corr_valid = corr > CORR_VALID_MIN
+    # Lower edge of the interval the percentile is taken over: the correlation
+    # value just ABOVE the heater (pulser) cluster, measured on the heater events
+    # themselves (read RAW: flag == 1, corr > HEATER_CORR_MIN, no quality cuts),
+    # exactly as in ThalliumStabilization.py. Falls back to CORR_VALID_MIN when
+    # there is no heater flag or the fit is unusable.
+    if heater_flag_leaf:
+        _hd = (ROOT.RDataFrame(tree_for_stabilization)
+               .Filter(f"{heater_flag_leaf} == 1")
+               .AsNumpy(["heat_correlation"]))
+        heater_corrs = np.asarray(_hd["heat_correlation"], np.float64)
+        corr_valid_min_eff, h_corr_heater, fit_corr_heater = AnalyzeHeaterCorrThreshold(
+            heater_corrs, ch_id, CORR_VALID_MIN)
+    else:
+        corr_valid_min_eff, h_corr_heater, fit_corr_heater = CORR_VALID_MIN, None, None
+        heater_corrs = np.empty(0, np.float64)
+        print(f">>> Ch {ch_id}: no 'IsHeater'/'heat_IsHeater' flag; correlation "
+              f"interval lower bound = CORR_VALID_MIN = {CORR_VALID_MIN:.6f}.")
+    print(f">>> Correlation interval lower bound (above heater): {corr_valid_min_eff:.6f}")
+
+    mask_corr_valid = corr > corr_valid_min_eff
     corr_above      = corr[mask_corr_valid]
     ha_above        = ha[mask_corr_valid]
     corr_sorted     = np.sort(corr_above)
     n_corr          = len(corr_sorted)
 
-    corr_hist_min    = float(corr_sorted[int(n_corr * 0.01)]) if n_corr > 0 else CORR_VALID_MIN
+    corr_hist_min    = float(corr_sorted[int(n_corr * 0.01)]) if n_corr > 0 else corr_valid_min_eff
     corr_cut_dynamic = (float(corr_sorted[int(n_corr * CORR_CUT_PERCENTILE)])
                         if n_corr > 0 else 0.9995)
 
@@ -2321,7 +3529,15 @@ def run_stabilization(
     # [CAL_SEARCH_MIN, CAL_SEARCH_MAX] with _two_peaks (prominence-ranked, the
     # same function later used for the doublet fits), then center the single
     # CAL_WIN_WIDTH-wide window on the MIDPOINT of the two peak positions.
-    mask_main = corr > corr_cut_dynamic
+    # The correlation cut already sits above the heater cluster, so the pulser is
+    # out by construction. The flag is still applied: it is exact, it costs
+    # nothing, and it also removes the heater events whose correlation happens to
+    # fluctuate above the cut.
+    mask_main = (corr > corr_cut_dynamic) & ~is_heater
+    if heater_flag_leaf:
+        _n_h = int((is_heater & (corr > corr_cut_dynamic)).sum())
+        print(f">>> Heater (pulser) events surviving the correlation cut and "
+              f"removed by the flag: {_n_h}.")
     win_center = 0.5 * (CAL_SEARCH_MIN + CAL_SEARCH_MAX)     # last-resort fallback
     rough_search = cal_rough[mask_main & (cal_rough > CAL_SEARCH_MIN)
                              & (cal_rough < CAL_SEARCH_MAX)]
@@ -2331,16 +3547,19 @@ def run_stabilization(
         h_s.SetDirectory(0)
         h_s.FillN(rough_search.size, rough_search.astype(np.double),
                   np.ones(rough_search.size, np.double))
-        peaks_win = _two_peaks(h_s)                  # both doublet peaks, sorted by x
-        if len(peaks_win) >= 2:
-            p_lo, p_hi = peaks_win[0][0], peaks_win[1][0]
+        pair = doublet_pair(h_s)     # the pair whose separation fits the lines
+        peaks_win = _two_peaks(h_s)  # fallback: most prominent structures
+        if pair is not None:
+            p_lo, p_hi = pair
             win_center = 0.5 * (p_lo + p_hi)         # midpoint of the doublet
             print(f">>> Analysis window centered on the doublet midpoint "
-                  f"{win_center:.0f} rough (peaks {p_lo:.0f}, {p_hi:.0f}).")
-        elif len(peaks_win) == 1:
+                  f"{win_center:.0f} rough (peaks {p_lo:.0f}, {p_hi:.0f}; "
+                  f"separation {100*(p_hi-p_lo)/p_hi:.2f}%, expected "
+                  f"{100*DOUBLET_SEP_REL:.2f}%).")
+        elif len(peaks_win) >= 1:
             win_center = peaks_win[0][0]
-            print(f">>> Only one peak found; analysis window centered on it "
-                  f"({win_center:.0f} rough).")
+            print(f">>> No peak pair with the doublet separation; window centered "
+                  f"on the most prominent peak ({win_center:.0f} rough).")
         else:
             win_center, _ = find_dominant_peak(h_s)  # no TSpectrum peak -> tallest bin
             print(f">>> No TSpectrum peak; analysis window centered on the dominant "
@@ -2404,6 +3623,7 @@ def run_stabilization(
     ha_main   = ha[mask_baseline]
     partition_intervals, partition_peaks, h_base_part = FindBaselinePartitions(
         base_main, ch_id, enabled=ENABLE_BASELINE_PARTITIONS)
+
 
     if not ENABLE_BASELINE_PARTITIONS:
         print(">>> Baseline partitioning DISABLED: single stabilization over the whole range.")
@@ -2486,8 +3706,19 @@ def run_stabilization(
         res1 = AnalyzeLightYield(h_ly1, f"LD1_{ch_id}") if h_ly1.GetEntries() > 0 else LYResult()
         res2 = AnalyzeLightYield(h_ly2, f"LD2_{ch_id}") if h_ly2.GetEntries() > 0 else LYResult()
 
-        # Pick the LD whose alpha core is best resolved (higher |mu|/sigma).
-        chosen_ld        = 2 if res2.df_value > res1.df_value else 1
+        # Pick the LD whose alpha core is best resolved (higher |mu|/sigma),
+        # among the ones that actually measured light (see ld_usable).
+        ok1, ok2 = ld_usable(vals_ly1_np), ld_usable(vals_ly2_np)
+        if not (ok1 or ok2):
+            print("  [!] Neither light detector has a non-zero light yield; "
+                  "LD1 kept, the LY cut is meaningless on this channel.")
+            chosen_ld = 1
+        elif ok1 and ok2:
+            chosen_ld = 2 if res2.df_value > res1.df_value else 1
+        else:
+            chosen_ld = 1 if ok1 else 2
+            print(f"  [!] LD{2 if ok1 else 1} has no non-zero light yield "
+                  f"(detector absent); LD{chosen_ld} used for the LY cut.")
         ly_cut_min_final = res1.cut_min if chosen_ld == 1 else res2.cut_min
         ly_cut_max_final = res1.cut_max if chosen_ld == 1 else res2.cut_max
 
@@ -2657,6 +3888,11 @@ def run_stabilization(
         doublet_after = fit_alpha_doublet(all_after, a_lo, a_hi, f"after_comb_{ch_id}")
         doublet_after.hist.SetTitle(
             f"Ch {ch_id}: Alpha doublet AFTER stabilization (all partitions);Energy (keV);Counts")
+
+    if SAVE_ALPHA_RES_CSV:
+        write_alpha_resolution_csv(
+            os.path.join(output_dir, STAB_ROOT_DIR_NAME, ALPHA_RES_CSV_NAME),
+            ch_id, doublet_before, doublet_after)
 
     # Counts under the (stabilized) alpha peak, from its Gaussian component.
     if doublet_after is not None and doublet_after.fit is not None:
@@ -2915,21 +4151,8 @@ def run_stabilization(
                     gc.GetXaxis().SetLimits(x0, x1)
                     gc.SetMinimum(y0); gc.SetMaximum(y1)
                 gc.Draw("AP")
-                # leverage outliers excluded from the linear fit: drawn in orange
-                # (they ARE still stabilized as normal events).
-                if r.g_heat_vs_base_trim is not None:
-                    gt = r.g_heat_vs_base_trim
-                    gt.SetMarkerStyle(29); gt.SetMarkerSize(1.8); gt.SetMarkerColor(ROOT.kOrange + 7)
-                    gt.Draw("P same")
-                    tnote = ROOT.TPaveText(0.14, 0.14, 0.66, 0.20, "NDC")
-                    tnote.SetFillColor(ROOT.kWhite); tnote.SetBorderSize(1)
-                    tnote.SetTextAlign(12); tnote.SetTextFont(42); tnote.SetTextSize(0.035)
-                    tt = tnote.AddText("orange = excluded from the line")
-                    tt.SetTextColor(ROOT.kOrange + 7)
-                    tnote.Draw(); global_lines.append(tnote)
                 if r.f1:
-                    # draw the line ONLY over the baseline range of the points used
-                    # in the fit, so it is clear the orange outliers are not fitted.
+                    # draw the line over the baseline range of the fitted points
                     lr = r.fit_brange if r.fit_brange is not None else r.view_clean[:2]
                     r.f1.SetRange(lr[0], lr[1])
                     r.f1.SetLineColor(ROOT.kRed); r.f1.SetLineWidth(2); r.f1.Draw("same")
@@ -3139,7 +4362,7 @@ def run_stabilization(
                          res1.fit_Tl, res1.fit_alpha, res2.fit_Tl, res2.fit_alpha])
         for r in part_results:
             keep.extend([r.h_heat_orig, r.fit_prelim, r.h_heat_clean, r.fit_clean,
-                         r.g_heat_vs_base_clean, r.g_heat_vs_base_trim, r.f1, r.f1_ext,
+                         r.g_heat_vs_base_clean, r.f1, r.f1_ext,
                          r.h_heat_stab, r.fit_stab,
                          r.g_heat_vs_base_stab, r.h_heat_cal, r.h_heat_cal_final,
                          r.fit_cal])

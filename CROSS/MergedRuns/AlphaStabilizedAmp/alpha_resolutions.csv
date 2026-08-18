@@ -1,0 +1,11 @@
+channel,step,variable,label,row,background,mu,mu_err,sigma,sigma_err,fwhm,fwhm_err,resolution_pct,resolution_err_pct,chi2,ndf,prob,n_peak,n_hist,win_frac,res_exp,date
+26,0,corrected,Before alpha stabilization,energy,pol1,5407.45,1.31692,10.5368,1.49538,24.8123,3.52136,0.4589,0.0651,25.633,24,0.3720,nan,nan,nan,nan,2026-08-18 16:45:49
+26,1,alpha_line,After alpha stabilization,energy,pol1,5406.7,0.734155,6.28017,0.736675,14.7887,1.73474,0.2735,0.0321,41.455,37,0.2825,nan,nan,nan,nan,2026-08-18 16:45:49
+27,0,corrected,Before alpha stabilization,energy,pol1,5407.45,0.817861,10.6992,0.824837,25.1946,1.94234,0.4659,0.0359,45.239,25,0.0079,nan,nan,nan,nan,2026-08-18 15:38:21
+27,1,alpha_line,After alpha stabilization,energy,pol1,5406.78,0.585666,6.33092,0.5198,14.9082,1.22403,0.2757,0.0226,57.809,38,0.0207,nan,nan,nan,nan,2026-08-18 15:38:21
+57,0,corrected,Before alpha stabilization,energy,pol1,5407.45,2.64111,11.6783,2.06963,27.5002,4.87361,0.5086,0.0901,9.632,11,0.5638,nan,nan,nan,nan,2026-08-18 16:50:00
+57,1,alpha_line,After alpha stabilization,energy,pol1,5404.61,2.46806,13.063,2.14438,30.7611,5.04962,0.5692,0.0934,36.437,16,0.0025,nan,nan,nan,nan,2026-08-18 16:50:00
+58,0,corrected,Before alpha stabilization,energy,pol1,5407.45,0.86054,12.5477,0.83496,29.5476,1.96618,0.5464,0.0364,45.395,30,0.0355,nan,nan,nan,nan,2026-08-18 16:12:46
+58,1,alpha_line,After alpha stabilization,energy,pol1,5406.92,0.643094,7.34336,1.01515,17.2923,2.39049,0.3198,0.0442,36.797,29,0.1515,nan,nan,nan,nan,2026-08-18 16:12:46
+60,0,corrected,Before alpha stabilization,energy,pol1,5407.45,1.68281,16.738,1.90265,39.4149,4.48039,0.7289,0.0829,35.432,28,0.1576,nan,nan,nan,nan,2026-08-18 15:39:00
+60,1,alpha_line,After alpha stabilization,energy,pol1,5405.27,1.07238,9.8975,1.491,23.3068,3.51104,0.4312,0.0650,24.172,29,0.7204,nan,nan,nan,nan,2026-08-18 15:39:00

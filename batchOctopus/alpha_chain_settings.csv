@@ -1,0 +1,6 @@
+channel,win_scale_corrected,win_scale_alpha,bin_div_corrected,bin_div_alpha,sig_scale_corrected,sig_scale_alpha,peak_nsigma,sig_lo,sig_hi
+26,1.5,1.5,4.0,3.0,1.0,1.0,4.0,0.1,1.5
+27,1.0,1.0,4.0,4.0,1.0,1.0,6.0,0.3,1.5
+57,1.0,1.0,4.0,3.0,1.0,1.0,6.0,0.3,1.5
+58,1.0,1,5.0,4.5,1.0,1.0,4.0,0.3,1.5
+60,1.5,1.0,2.0,4.0,1.0,1.0,6.0,0.3,1.5

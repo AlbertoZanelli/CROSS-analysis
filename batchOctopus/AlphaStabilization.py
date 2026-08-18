@@ -413,6 +413,14 @@ PART_MIN_CLEAN_EVENTS = 2
 # Set LINE_FIT_METHOD = "theilsen" to go back to the previous behaviour.
 LINE_FIT_METHOD = "rob"
 LINE_FIT_ROB    = 0.85
+# Leverage-outlier trim, applied BEFORE the "theilsen" fit only (with "rob" the
+# trimming is ROOT's own and it does not say which points it dropped). Points
+# whose BASELINE is more than this many MADs from the baseline median are
+# excluded from the LINE ONLY -- they are still stabilized as normal events --
+# and drawn as orange stars on the scatter. An isolated point far from the
+# baseline cluster drags the line towards itself precisely because of its
+# leverage. Set to None to switch the trim OFF and fit every clean point.
+LINE_FIT_MAD_TRIM = 5.0
 
 # --- Thallium-peak search hint (multi-partition) ----------------------------
 # The thallium peak is first located on the COMBINED spectrum (all partitions
@@ -2862,20 +2870,37 @@ def FindBaselinePartitions(baseline_vals, ch_id, enabled=True):
 # ===========================================================================
 
 
-def robust_line(bases, amps, max_pairs_points=700):
+def robust_line(bases, amps, mad_trim=None, max_pairs_points=700):
     """
-    Linear fit  amplitude = q0 + slope * baseline  over ALL the clean points:
-    Theil-Sen estimate, slope = median of all pairwise slopes, q0 = median(a -
-    slope*b). Parameter-free.
+    Linear fit  amplitude = q0 + slope * baseline: Theil-Sen estimate, slope =
+    median of all pairwise slopes, q0 = median(a - slope*b). Parameter-free,
+    breakdown ~29 % by construction.
 
-    NO point is excluded: every clean event of the partition enters the line.
-    Returns (q0, slope).
+    When *mad_trim* is not None, the points whose BASELINE lies more than that
+    many MADs from the baseline median are dropped FIRST (leverage outliers).
+    With mad_trim=None every clean point enters the line.
+
+    Returns (q0, slope, trimmed_mask); trimmed_mask is over the ORIGINAL input
+    and is all-False when the trim is off.
     """
     b0 = np.asarray(bases, np.float64); a0 = np.asarray(amps, np.float64)
+    trimmed = np.zeros(b0.size, dtype=bool)     # True = excluded from the line
     ok = np.isfinite(b0) & np.isfinite(a0)
     b, a = b0[ok], a0[ok]
     if b.size < 2:
-        return (float(np.median(a)) if a.size else 0.0), 0.0
+        return (float(np.median(a)) if a.size else 0.0), 0.0, trimmed
+    if mad_trim:
+        bmed = np.median(b); mad = np.median(np.abs(b - bmed)) * 1.4826
+        keep = np.ones(b.size, dtype=bool)
+        if mad > 0:
+            cand = np.abs(b - bmed) <= mad_trim * mad
+            # never trim so much that the line rests on a handful of points
+            if cand.sum() >= max(4, int(0.5 * b.size)):
+                keep = cand
+        trimmed[np.flatnonzero(ok)[~keep]] = True
+        b, a = b[keep], a[keep]
+        if b.size < 2:
+            return (float(np.median(a)) if a.size else 0.0), 0.0, trimmed
     # subsample when large: the pairwise-slope set is O(n^2)
     if b.size > max_pairs_points:
         idx = np.random.default_rng(12345).choice(b.size, max_pairs_points, replace=False)
@@ -2885,10 +2910,10 @@ def robust_line(bases, amps, max_pairs_points=700):
     i, j = np.triu_indices(bs.size, 1)
     db = bs[j] - bs[i]; m = np.abs(db) > 0
     if not m.any():
-        return float(np.median(a)), 0.0
+        return float(np.median(a)), 0.0, trimmed
     slope = float(np.median((as_[j] - as_[i])[m] / db[m]))
     q0    = float(np.median(a - slope * b))
-    return q0, slope
+    return q0, slope, trimmed
 
 
 class StabResult:
@@ -2930,6 +2955,7 @@ class StabResult:
         self.h_heat_clean         = None   # clean peak BEFORE stabilization
         self.fit_clean            = None
         self.g_heat_vs_base_clean = None   # amplitude vs baseline + linear fit
+        self.g_heat_vs_base_trim  = None   # leverage outliers excluded from the line
         self.fit_brange           = None   # (min,max) baseline of the points used in the line
         self.f1                   = None   # FITTED line (red, always computed)
         self.f1_ext               = None   # EXTERNAL line (blue, when applied)
@@ -3090,10 +3116,22 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
             res.g_heat_vs_base_clean.Fit(res.f1, f"Q0 rob={LINE_FIT_ROB:.2f}")
             fit_q0, fit_slope = res.f1.GetParameter(0), res.f1.GetParameter(1)
         else:
-            # Theil-Sen over ALL the clean points: no event is excluded.
-            fit_q0, fit_slope = robust_line(clean_bases_np, clean_amps_np)
+            # Theil-Sen, optionally after the leverage trim (LINE_FIT_MAD_TRIM).
+            fit_q0, fit_slope, trim = robust_line(clean_bases_np, clean_amps_np,
+                                                  mad_trim=LINE_FIT_MAD_TRIM)
             res.f1.SetParameters(fit_q0, fit_slope)
-        res.fit_brange = (float(clean_bases_np.min()), float(clean_bases_np.max()))
+            n_trim = int(trim.sum())
+            if n_trim > 0:
+                res.g_heat_vs_base_trim = ROOT.TGraph(
+                    n_trim, clean_bases_np[trim].astype(np.double),
+                    clean_amps_np[trim].astype(np.double))
+                res.g_heat_vs_base_trim.SetName(f"g_heat_vs_base_trim_{tag}")
+                kept = ~trim
+                if kept.any():
+                    res.fit_brange = (float(clean_bases_np[kept].min()),
+                                      float(clean_bases_np[kept].max()))
+        if res.fit_brange is None:
+            res.fit_brange = (float(clean_bases_np.min()), float(clean_bases_np.max()))
 
     # --- line actually APPLIED ---------------------------------------------
     # External SLOPE-ONLY mode: reuse only the external slope (baseline-drift
@@ -4238,6 +4276,19 @@ def run_stabilization(
                     gc.GetXaxis().SetLimits(x0, x1)
                     gc.SetMinimum(y0); gc.SetMaximum(y1)
                 gc.Draw("AP")
+                # leverage outliers excluded from the linear fit: drawn in orange
+                # (they ARE still stabilized as normal events).
+                if r.g_heat_vs_base_trim is not None:
+                    gt = r.g_heat_vs_base_trim
+                    gt.SetMarkerStyle(29); gt.SetMarkerSize(1.8)
+                    gt.SetMarkerColor(ROOT.kOrange + 7)
+                    gt.Draw("P same")
+                    tnote = ROOT.TPaveText(0.14, 0.14, 0.66, 0.20, "NDC")
+                    tnote.SetFillColor(ROOT.kWhite); tnote.SetBorderSize(1)
+                    tnote.SetTextAlign(12); tnote.SetTextFont(42); tnote.SetTextSize(0.035)
+                    tt = tnote.AddText("orange = excluded from the line")
+                    tt.SetTextColor(ROOT.kOrange + 7)
+                    tnote.Draw(); global_lines.append(tnote)
                 if r.f1:
                     # draw the line over the baseline range of the fitted points
                     lr = r.fit_brange if r.fit_brange is not None else r.view_clean[:2]
@@ -4449,7 +4500,7 @@ def run_stabilization(
                          res1.fit_Tl, res1.fit_alpha, res2.fit_Tl, res2.fit_alpha])
         for r in part_results:
             keep.extend([r.h_heat_orig, r.fit_prelim, r.h_heat_clean, r.fit_clean,
-                         r.g_heat_vs_base_clean, r.f1, r.f1_ext,
+                         r.g_heat_vs_base_clean, r.g_heat_vs_base_trim, r.f1, r.f1_ext,
                          r.h_heat_stab, r.fit_stab,
                          r.g_heat_vs_base_stab, r.h_heat_cal, r.h_heat_cal_final,
                          r.fit_cal])

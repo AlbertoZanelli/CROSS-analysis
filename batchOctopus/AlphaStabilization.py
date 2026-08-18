@@ -269,6 +269,15 @@ DOUBLET_BIN_DIV = 2.0
 # stabilized spectrum yields only one peak at 60 bins and the fit used to
 # collapse to a single Gaussian (sigma 52, a meaningless 2.28 %).
 DOUBLET_COARSE_BINS = (60, 40, 30, 20, 15)
+# The doublet of the MOST POPULATED partition is fitted FIRST, and its two peak
+# positions are then suggested to every other partition (fit_alpha_doublet's
+# *expect*, i.e. take the candidate nearest each expected line instead of the
+# most prominent one). A low-statistics partition can otherwise anchor on a
+# continuum structure. Safe because the alpha peak shifts between partitions by
+# well UNDER one doublet separation -- that shift is what the stabilization
+# corrects, and it is a few tenths of a per cent against 1.91 %.
+# Set to False to let every partition search on its own.
+PARTITION_PEAK_HINT = True
 
 # --- Thallium cross-check (resolution gain from the ALPHA stabilization) -----
 # A SEPARATE, read-only diagnostic (it does NOT alter the stabilization or the
@@ -395,6 +404,13 @@ PART_WARM_MIN_COUNTS = 5      # second, LOW threshold (raw counts) used only to 
                               # main peak is short in BIN HEIGHT but can hold a large share of
                               # the events. It becomes a partition only if its integral passes
                               # PART_MIN_BLOCK_FRAC, so strays never do
+# Channels that need a LOWER threshold: on these, a secondary baseline population
+# holding as little as PART_MIN_BLOCK_FRAC_LOW of the main block still becomes a
+# partition of its own instead of being absorbed. Empty list = use
+# PART_MIN_BLOCK_FRAC everywhere. Keep this list the SAME in both programs, or
+# the two stop splitting the events the same way.
+PART_MIN_BLOCK_FRAC_CHANNELS = [90]    # e.g. [19, 65]
+PART_MIN_BLOCK_FRAC_LOW      = 0.05
 # Fewer clean events than this in a partition: no local line is fitted, the
 # partition inherits the nearest fitted one (a Gaussian and a linear fit need a
 # handful of points to mean anything, and zero points cannot even be histogrammed).
@@ -411,7 +427,7 @@ PART_MIN_CLEAN_EVENTS = 2
 #                residuals. Valid range 0.5-1.0 exclusive -- ROOT silently resets
 #                anything >= 1.0 back to 0.5.
 # Set LINE_FIT_METHOD = "theilsen" to go back to the previous behaviour.
-LINE_FIT_METHOD = "rob"
+LINE_FIT_METHOD = "theilsen"
 LINE_FIT_ROB    = 0.85
 # Leverage-outlier trim, applied BEFORE the "theilsen" fit only (with "rob" the
 # trimming is ROOT's own and it does not say which points it dropped). Points
@@ -420,7 +436,7 @@ LINE_FIT_ROB    = 0.85
 # and drawn as orange stars on the scatter. An isolated point far from the
 # baseline cluster drags the line towards itself precisely because of its
 # leverage. Set to None to switch the trim OFF and fit every clean point.
-LINE_FIT_MAD_TRIM = 5.0
+LINE_FIT_MAD_TRIM = 3.0
 
 # --- Thallium-peak search hint (multi-partition) ----------------------------
 # The thallium peak is first located on the COMBINED spectrum (all partitions
@@ -1255,7 +1271,7 @@ def _two_peaks(h, search_min=None, search_max=None):
     return [(t[0], t[2]) for t in keep]
 
 
-def doublet_pair(h, search_min=None, search_max=None):
+def doublet_pair(h, search_min=None, search_max=None, sep_rel=None):
     """
     The two peaks of the alpha DOUBLET in *h*, as (x_low, x_high).
 
@@ -1274,25 +1290,31 @@ def doublet_pair(h, search_min=None, search_max=None):
     partner (5768 + 5848, 19.4 + 5.5) by half a unit, and the window was built
     500 units away from the doublet.
 
-    Returns None when the anchor has no compatible partner (the caller then
-    falls back to the most prominent single peak).
+    *sep_rel* is the expected separation as a fraction; None means the nominal
+    DOUBLET_SEP_REL. The caller passes the one MEASURED on the most populated
+    partition when it has it: same two lines, same detector, so the separation
+    actually seen there identifies the partner better than the nominal value,
+    which the rough calibration distorts by a few per cent.
+
+    Returns None when the anchor has no compatible partner.
     """
     cands = [c for c in _peak_candidates(h, search_min, search_max) if c[1] > 0]
     if not cands:
         return None
+    sep   = sep_rel if sep_rel else DOUBLET_SEP_REL
     x0    = cands[0][0]                       # most prominent peak: the anchor
-    lo_f  = DOUBLET_SEP_REL / DOUBLET_SEP_TOL
-    hi_f  = DOUBLET_SEP_REL * DOUBLET_SEP_TOL
+    lo_f  = sep / DOUBLET_SEP_TOL
+    hi_f  = sep * DOUBLET_SEP_TOL
     best  = None
     for x, prom, _ in cands[1:]:
         x1, x2 = sorted((x0, x))
         if x2 <= 0:
             continue
-        sep = (x2 - x1) / x2
-        if not (lo_f <= sep <= hi_f):
+        sep_i = (x2 - x1) / x2
+        if not (lo_f <= sep_i <= hi_f):
             continue
         # closest to the expected separation; prominence only breaks ties
-        score = (abs(sep - DOUBLET_SEP_REL), -prom)
+        score = (abs(sep_i - sep), -prom)
         if best is None or score < best[0]:
             best = (score, x1, x2)
     return (best[1], best[2]) if best else None
@@ -1360,13 +1382,22 @@ def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=Non
     #    separation of the two lines, not by its prominence.
     #    *expect* = (mu_alpha, mu_recoil) on a spectrum already in energy: the
     #    positions are known, so the peaks are taken nearest to them.
+    # Separation suggested by *expect* when there is one: the two positions it
+    # carries were measured together, so their distance is the one this detector
+    # actually shows. Falls back to the nominal DOUBLET_SEP_REL.
+    sep_rel = DOUBLET_SEP_REL
+    if expect is not None and expect[1] > 0:
+        _s = (expect[1] - expect[0]) / expect[1]
+        if _s > 0:
+            sep_rel = _s
+
     h0 = pair = None
     for nb0 in DOUBLET_COARSE_BINS:
         h0   = build(nb0)
         pair = (doublet_expected(h0, expect[0], expect[1], search_min, search_max)
                 if expect is not None else None)
         if pair is None:
-            pair = doublet_pair(h0, search_min, search_max)
+            pair = doublet_pair(h0, search_min, search_max, sep_rel=sep_rel)
         if pair is not None:
             break
 
@@ -1377,12 +1408,12 @@ def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=Non
         # cannot see it. It goes on the side holding more counts.
         peak_x, _ = find_dominant_peak(h0, search_min, search_max)
         ax     = h0.GetXaxis()
-        up, dn = peak_x * (1.0 + DOUBLET_SEP_REL), peak_x * (1.0 - DOUBLET_SEP_REL)
+        up, dn = peak_x * (1.0 + sep_rel), peak_x * (1.0 - sep_rel)
         pair   = ((peak_x, up)
                   if h0.GetBinContent(ax.FindBin(up)) >= h0.GetBinContent(ax.FindBin(dn))
                   else (dn, peak_x))
         print(f"  [!] {tag}: doublet partner not found; seeded at the physical "
-              f"separation ({100 * DOUBLET_SEP_REL:.2f} %).")
+              f"separation ({100 * sep_rel:.2f} %).")
 
     # 2. preliminary single fits -> seed widths
     def prelim(mu):
@@ -1418,7 +1449,7 @@ def fit_alpha_doublet(amps, win_lo, win_hi, tag, search_min=None, search_max=Non
     # fit slid the second Gaussian down to 7849, so the partition was anchored
     # one whole separation away (the rescaled peak landed at 5604 keV instead of
     # 5407). The separation is a physical constant, so this bound costs nothing.
-    half_sep = 0.5 * DOUBLET_SEP_REL * pair[1]
+    half_sep = 0.5 * sep_rel * pair[1]
     ff.SetParLimits(1, pair[0] - half_sep, pair[0] + half_sep)
     ff.SetParLimits(4, pair[1] - half_sep, pair[1] + half_sep)
     h.Fit(ff, "Q0 R")
@@ -2663,6 +2694,15 @@ def evaluate_thallium_resolution(ch_id, ha, cal_rough, baseline, ld1_ly, ld2_ly,
 # BASELINE PARTITIONING
 # ===========================================================================
 
+def part_min_block_frac(ch_id):
+    """PART_MIN_BLOCK_FRAC for this channel: the lower value on the channels
+    listed in PART_MIN_BLOCK_FRAC_CHANNELS, the default everywhere else."""
+    try:
+        listed = int(ch_id) in {int(c) for c in PART_MIN_BLOCK_FRAC_CHANNELS}
+    except (TypeError, ValueError):
+        listed = False
+    return PART_MIN_BLOCK_FRAC_LOW if listed else PART_MIN_BLOCK_FRAC
+
 def _bin_runs(mask, min_gap):
     """
     Runs of True bins in *mask*, as [start, end] pairs (0-based, inclusive),
@@ -2809,11 +2849,12 @@ def FindBaselinePartitions(baseline_vals, ch_id, enabled=True):
     # already found is kept when its integral passes the same PART_MIN_BLOCK_FRAC
     # test the blocks are judged by. Nothing already found can be lost here: the
     # step only ADDS blocks.
+    min_block_frac = part_min_block_frac(ch_id)
     warm = c > PART_WARM_MIN_COUNTS
     for w_start, w_end in _bin_runs(warm, PART_MIN_GAP_BINS):
         if any(w_start <= b[1] and b[0] <= w_end for b in blocks):
             continue                                  # already inside a block
-        if float(c[w_start:w_end + 1].sum()) < PART_MIN_BLOCK_FRAC * max(
+        if float(c[w_start:w_end + 1].sum()) < min_block_frac * max(
                 float(c[b[0]:b[1] + 1].sum()) for b in blocks):
             continue                                  # negligible: a few strays
         blocks.append([w_start, w_end])
@@ -2829,7 +2870,7 @@ def FindBaselinePartitions(baseline_vals, ch_id, enabled=True):
         return float(c[b[0]:b[1] + 1].sum())
 
     ref_max   = max((block_integral(b) for b in blocks), default=0.0)
-    min_block = PART_MIN_BLOCK_FRAC * ref_max
+    min_block = min_block_frac * ref_max
     while len(blocks) > 1:
         integrals = [block_integral(b) for b in blocks]
         m = int(np.argmin(integrals))
@@ -2969,7 +3010,7 @@ class StabResult:
 
 def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
                       manual_cuts=None, apply_heat_manual=False, peak_hint=None,
-                      ext_line=None):
+                      ext_line=None, expect=None):
     """
     Run the full stabilization on ONE baseline partition.
 
@@ -3024,11 +3065,12 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
 
     # Double-Gaussian (+ linear background) fit of the alpha doublet with binning
     # optimized to the peak width. h_heat_orig is the optimized histogram; the
-    # ALPHA-PARTICLE (lower) peak is the stabilization reference. The peak search
-    # is NOT restricted to the hint window: the alpha+recoil peak sits ABOVE the
-    # alpha line and a tight window would clip it (the prominence finder already
-    # rejects background fluctuations). The stab window bounds the doublet region.
-    doublet = fit_alpha_doublet(amps_for_stab, heat_min, heat_max, f"fit_prelim_{tag}")
+    # ALPHA-PARTICLE (lower) peak is the stabilization reference. The search is
+    # not WINDOWED (a tight window would clip the recoil peak, which sits above
+    # the alpha line); *expect* instead names the two positions measured on the
+    # most populated partition, so the pair is picked nearest to them.
+    doublet = fit_alpha_doublet(amps_for_stab, heat_min, heat_max, f"fit_prelim_{tag}",
+                                expect=expect)
     res.h_heat_orig = doublet.hist
     res.h_heat_orig.SetTitle(
         f"Ch {ch_id} P{idx} [{blo:.3f},{bhi:.3f}]: Alpha doublet after LY cut - Pre-cleaning;Amplitude;Counts")
@@ -3908,6 +3950,24 @@ def run_stabilization(
         print(f">>> Combined-spectrum alpha peak hint at amplitude {hint_center:.1f} "
               f"(sigma {hint_sigma:.1f}); used for all partitions.")
 
+    # Reference doublet: the most populated partition is fitted first and its two
+    # peak positions are suggested to all the others (see PARTITION_PEAK_HINT).
+    doublet_expect = None
+    if PARTITION_PEAK_HINT and len(partition_intervals) > 1:
+        _sizes = [int((mask_ly_pass & mask_stab_window & (part_of_event == i)).sum())
+                  for i in range(len(partition_intervals))]
+        _ref = int(np.argmax(_sizes))
+        if _sizes[_ref] > 0:
+            _a = amp_for_analysis[mask_ly_pass & mask_stab_window
+                                  & (part_of_event == _ref)]
+            _, _rlo, _rhi = calcRobustLimitsAndBins(_a.tolist())
+            _d = fit_alpha_doublet(_a, _rlo, _rhi, f"refdbl_{ch_id}")
+            if _d.ok and _d.mu_a > 0 and _d.mu_r is not None and _d.mu_r > 0:
+                doublet_expect = (_d.mu_a, _d.mu_r)
+                print(f">>> Ch {ch_id}: doublet of partition {_ref} "
+                      f"({_sizes[_ref]} events, the most populated): "
+                      f"{_d.mu_a:.1f} + {_d.mu_r:.1f}; suggested to the others.")
+
     part_results      = []
     apply_heat_manual = (len(partition_intervals) == 1)
     for idx, (blo, bhi) in enumerate(partition_intervals):
@@ -3921,7 +3981,8 @@ def run_stabilization(
         res_p = process_partition(amps_p, bases_p, ch_id, idx, blo, bhi,
                                   manual_cuts=manual_cuts,
                                   apply_heat_manual=apply_heat_manual,
-                                  peak_hint=peak_hint, ext_line=ext_single)
+                                  peak_hint=peak_hint, ext_line=ext_single,
+                                  expect=doublet_expect)
         part_results.append(res_p)
 
     sufficient_events = any(r.sufficient for r in part_results)
@@ -3944,7 +4005,8 @@ def run_stabilization(
         if r.all_amps.size < 1:
             continue
         _, lo, hi = calcRobustLimitsAndBins(r.all_amps.tolist())
-        d_raw = fit_alpha_doublet(r.all_amps, lo, hi, f"pdbraw_{ch_id}_{r.idx}")
+        d_raw = fit_alpha_doublet(r.all_amps, lo, hi, f"pdbraw_{ch_id}_{r.idx}",
+                                  expect=doublet_expect)
         mu_ref = doublet_ref(d_raw)[0] if d_raw.ok else 0.0
         if not (mu_ref and mu_ref > 0):
             mu_ref = float(np.median(r.all_amps))

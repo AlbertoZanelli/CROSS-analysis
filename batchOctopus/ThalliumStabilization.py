@@ -154,14 +154,14 @@ BASE_DIR_PERSONAL = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/C
 
 # run mode: CROSS folder holding the RUNxxxxxx sub-folders, and the run number.
 CROSS_DIR  = "/data/users/azanelli/octopus_work/CROSS-analysis/CROSS"
-RUN_NUMBER = 96                 # e.g. 96 -> folder RUN000096, sub-folder Coincidence
+RUN_NUMBER = 92                 # e.g. 96 -> folder RUN000096, sub-folder Coincidence
 
 # --- Channels to analyse (number after "ch" in the file name) ---------------
 #   []          -> process ALL files in BASE_DIR (batch).
 #   [N]         -> single channel; GUI if GUI_MANUAL_CUTS is True.
 #   [N, M, ...] -> several channels, always batch.
 # Command-line channels (if given) OVERRIDE this list.
-CHANNELS_TO_PROCESS = [19, 20, 21, 22, 23, 24, 49, 50, 51, 52, 53, 54, 85, 86, 87, 88, 89, 90, 61, 62, 63, 64, 65, 66]
+CHANNELS_TO_PROCESS = [19, 20, 21, 22, 23, 24, 49, 50, 51, 52, 53, 54, 85, 86, 87, 88, 89, 90, 61, 62, 63, 64, 65, 66, 25, 26, 27, 28, 29, 30, 55, 56, 57, 58, 59, 60]
 
 #[25, 26, 27, 28, 29, 30, 55, 56, 57, 58, 59, 60] 
 

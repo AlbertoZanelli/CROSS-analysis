@@ -195,7 +195,7 @@ STAB_LINES_TREE_NAME     = "stabilization_lines"
 AMP_TREE_DEFAULT        = "corrected_amplitude"
 AMP_TREE_FALLBACK       = "stabilization_all"
 AMP_TREE_OPTIMUM        = "optimumfilter_all"
-OPTIMUM_FILTER_CHANNELS = [25, 59]   # channels using AMP_TREE_OPTIMUM.heat_amplitude
+OPTIMUM_FILTER_CHANNELS = [25, 59, 53, 66]   # channels using AMP_TREE_OPTIMUM.heat_amplitude
 
 
 # ===========================================================================
@@ -409,7 +409,7 @@ PART_WARM_MIN_COUNTS = 5      # second, LOW threshold (raw counts) used only to 
 # partition of its own instead of being absorbed. Empty list = use
 # PART_MIN_BLOCK_FRAC everywhere. Keep this list the SAME in both programs, or
 # the two stop splitting the events the same way.
-PART_MIN_BLOCK_FRAC_CHANNELS = [90]    # e.g. [19, 65]
+PART_MIN_BLOCK_FRAC_CHANNELS = [90, 49]    # e.g. [19, 65]
 PART_MIN_BLOCK_FRAC_LOW      = 0.05
 # Fewer clean events than this in a partition: no local line is fitted, the
 # partition inherits the nearest fitted one (a Gaussian and a linear fit need a

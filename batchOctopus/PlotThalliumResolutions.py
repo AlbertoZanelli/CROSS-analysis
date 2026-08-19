@@ -85,7 +85,7 @@ TARGET_ENERGY = 2614.511      # keV, the line the energy row is rescaled to
 #     EXCLUDE_CHANNELS = [29, 55]
 # They are dropped whatever else is asked for (--channels included), and the
 # ones actually dropped are printed when the program runs.
-EXCLUDE_CHANNELS = []
+EXCLUDE_CHANNELS = [64, 86, 87, 88, 89, 85, 19, 30]
 
 # Steps of the analysis, in order, with the name shown in the legend, the colour
 # and the marker. The keys are the ones ThalliumStabilization.py writes in the

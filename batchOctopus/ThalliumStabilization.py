@@ -387,6 +387,13 @@ PART_WARM_MIN_COUNTS = 5      # second, LOW threshold (raw counts) used only to 
                               # main peak is short in BIN HEIGHT but can hold a large share of
                               # the events. It becomes a partition only if its integral passes
                               # PART_MIN_BLOCK_FRAC, so strays never do
+# Channels that need a LOWER threshold: on these, a secondary baseline population
+# holding as little as PART_MIN_BLOCK_FRAC_LOW of the main block still becomes a
+# partition of its own instead of being absorbed. Empty list = use
+# PART_MIN_BLOCK_FRAC everywhere. Keep this list the SAME in both programs, or
+# the two stop splitting the events the same way.
+PART_MIN_BLOCK_FRAC_CHANNELS = [57]    # e.g. [19, 65]
+PART_MIN_BLOCK_FRAC_LOW      = 0.05
 
 # --- Thallium-peak search hint (multi-partition) ----------------------------
 # The thallium peak is first located on the COMBINED spectrum (all partitions
@@ -406,6 +413,20 @@ PEAK_HINT_NSIGMA        = 8.0   # search half-width, in hint sigmas
 # the local position is adopted only above PEAK_SIGNIF_MIN standard deviations.
 PEAK_SIGNIF_NSIGMA      = 2.0
 PEAK_SIGNIF_MIN         = 3.0
+# Channels where the LOCAL peak of a partition must NEVER be trusted, whatever
+# its significance: the combined-spectrum position is used for every partition,
+# exactly as it is when the statistics are too low. Needed where the thallium
+# line is LOW over a strong continuum -- the significance is an excess over the
+# side bands divided by its own fluctuation, so on a channel with many events a
+# continuum shoulder clears the threshold and the partition anchors on it
+# (ch66 partition 0: 4.7 sigma on the wrong structure).
+# Keep this list the SAME in both programs.
+PEAK_HINT_FORCE_CHANNELS = [66]    # e.g. [66]
+# Leverage-outlier trim of the amplitude-vs-baseline fit, in MADs of the
+# baseline (same mechanism as AlphaStabilization.py). The trimmed points are
+# excluded from the LINE ONLY and drawn as orange stars on the scatter; the
+# rob= fit below still trims on the RESIDUALS on top of this. None = off.
+LINE_FIT_MAD_TRIM = 3.0
 # Fewer clean events than this in a partition: no local line is fitted, the
 # partition inherits the nearest fitted one (a Gaussian and a linear fit need a
 # handful of points to mean anything, and zero points cannot even be histogrammed).
@@ -1325,6 +1346,14 @@ def FindThalliumPeak(h_heat_orig, search_min=None, search_max=None):
     return h_heat_orig.GetXaxis().GetBinCenter(best_peak_bin), h_heat_orig.GetBinContent(best_peak_bin)
 
 
+def force_peak_hint(ch_id):
+    """True when this channel's partitions must take the combined-spectrum peak
+    position instead of their own (see PEAK_HINT_FORCE_CHANNELS)."""
+    try:
+        return int(ch_id) in {int(c) for c in PEAK_HINT_FORCE_CHANNELS}
+    except (TypeError, ValueError):
+        return False
+
 def peak_significance(h, center, sigma):
     """
     How well the peak at *center* stands out of the local continuum, in standard
@@ -1585,6 +1614,36 @@ def combined_before_after_fits(before_e, after_e, center, tag, sig_hint=None):
     return shared_before_after_fits(before_e, after_e, center, tag,
                                     sig_hint=sig_hint, stats_aware=False)
 
+
+def leverage_trim(bases, mad_trim=None):
+    """
+    Mask of the LEVERAGE outliers of a partition: points whose BASELINE lies more
+    than *mad_trim* MADs from the baseline median. They are excluded from the
+    LINE ONLY -- they are still stabilized as normal events -- because an
+    isolated point far from the baseline cluster drags the fit towards itself
+    precisely because of its leverage.
+
+    Never trims so much that the line would rest on a handful of points: the cut
+    is dropped unless it keeps at least half the sample (and at least 4 points).
+    All-False when *mad_trim* is None/0 or the baselines are degenerate.
+    """
+    b = np.asarray(bases, np.float64)
+    trimmed = np.zeros(b.size, dtype=bool)
+    if not mad_trim or b.size < 2:
+        return trimmed
+    ok = np.isfinite(b)
+    bb = b[ok]
+    if bb.size < 2:
+        return trimmed
+    bmed = np.median(bb)
+    mad  = np.median(np.abs(bb - bmed)) * 1.4826
+    if not (mad > 0):
+        return trimmed
+    keep = np.abs(bb - bmed) <= mad_trim * mad
+    if keep.sum() < max(4, int(0.5 * bb.size)):
+        return trimmed
+    trimmed[np.flatnonzero(ok)[~keep]] = True
+    return trimmed
 
 def rough_to_units(values, cal_rough, mask):
     """
@@ -1959,6 +2018,15 @@ def fit_peak_centred(values, mu, tag, interval, cfg, key):
 # BASELINE PARTITIONING
 # ===========================================================================
 
+def part_min_block_frac(ch_id):
+    """PART_MIN_BLOCK_FRAC for this channel: the lower value on the channels
+    listed in PART_MIN_BLOCK_FRAC_CHANNELS, the default everywhere else."""
+    try:
+        listed = int(ch_id) in {int(c) for c in PART_MIN_BLOCK_FRAC_CHANNELS}
+    except (TypeError, ValueError):
+        listed = False
+    return PART_MIN_BLOCK_FRAC_LOW if listed else PART_MIN_BLOCK_FRAC
+
 def _bin_runs(mask, min_gap):
     """
     Runs of True bins in *mask*, as [start, end] pairs (0-based, inclusive),
@@ -2106,11 +2174,12 @@ def FindBaselinePartitions(baseline_vals, ch_id, enabled=True):
     # already found is kept when its integral passes the same PART_MIN_BLOCK_FRAC
     # test the blocks are judged by. Nothing already found can be lost here: the
     # step only ADDS blocks.
+    min_block_frac = part_min_block_frac(ch_id)
     warm = c > PART_WARM_MIN_COUNTS
     for w_start, w_end in _bin_runs(warm, PART_MIN_GAP_BINS):
         if any(w_start <= b[1] and b[0] <= w_end for b in blocks):
             continue                                  # already inside a block
-        if float(c[w_start:w_end + 1].sum()) < PART_MIN_BLOCK_FRAC * max(
+        if float(c[w_start:w_end + 1].sum()) < min_block_frac * max(
                 float(c[b[0]:b[1] + 1].sum()) for b in blocks):
             continue                                  # negligible: a few strays
         blocks.append([w_start, w_end])
@@ -2126,7 +2195,7 @@ def FindBaselinePartitions(baseline_vals, ch_id, enabled=True):
         return float(c[b[0]:b[1] + 1].sum())
 
     ref_max   = max((block_integral(b) for b in blocks), default=0.0)
-    min_block = PART_MIN_BLOCK_FRAC * ref_max
+    min_block = min_block_frac * ref_max
     while len(blocks) > 1:
         integrals = [block_integral(b) for b in blocks]
         m = int(np.argmin(integrals))
@@ -2210,6 +2279,8 @@ class StabResult:
         self.h_heat_clean         = None   # clean peak BEFORE stabilization
         self.fit_clean            = None
         self.g_heat_vs_base_clean = None   # amplitude vs baseline + linear fit
+        self.g_heat_vs_base_trim  = None   # leverage outliers excluded from the line
+        self.fit_brange           = None   # (min,max) baseline of the points used in the line
         self.f1                   = None   # FITTED line (red, always computed)
         self.f1_ext               = None   # EXTERNAL line (blue, when applied)
         self.h_heat_stab          = None   # peak AFTER stabilization (amplitude)
@@ -2295,12 +2366,14 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
 
     if peak_hint is not None:
         signif = peak_significance(res.h_heat_orig, peak_x, hint_sigma)
-        if signif < PEAK_SIGNIF_MIN:
+        forced = force_peak_hint(ch_id)
+        if forced or signif < PEAK_SIGNIF_MIN:
             peak_x = hint_center
             peak_y = res.h_heat_orig.GetBinContent(
                 res.h_heat_orig.GetXaxis().FindBin(hint_center))
-            print(f"  -> Ch {ch_id} P{idx}: local peak not significant "
-                  f"({signif:.1f} < {PEAK_SIGNIF_MIN} sigma, {n_stab} events); "
+            why = ("channel listed in PEAK_HINT_FORCE_CHANNELS" if forced
+                   else f"local peak not significant ({signif:.1f} < {PEAK_SIGNIF_MIN} sigma)")
+            print(f"  -> Ch {ch_id} P{idx}: {why}, {n_stab} events; "
                   f"position taken from the combined spectrum ({hint_center:.1f}).")
         else:
             print(f"  -> Ch {ch_id} P{idx}: local peak at {peak_x:.1f} "
@@ -2387,8 +2460,26 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
     # --- robust pol1 fit: ALWAYS computed (shown in red for comparison) -----
     fit_slope, fit_q0 = 0.0, res.mean_amp_clean
     if res.g_heat_vs_base_clean.GetN() > 3:
+        # Leverage outliers first (LINE_FIT_MAD_TRIM), then the robust fit on
+        # what is left: the two remove different things -- baseline outliers
+        # here, residual outliers in the rob= fit.
+        trim = leverage_trim(clean_bases_np, LINE_FIT_MAD_TRIM)
+        n_trim = int(trim.sum())
+        g_fit  = res.g_heat_vs_base_clean
+        if n_trim > 0:
+            kept = ~trim
+            g_fit = ROOT.TGraph(int(kept.sum()),
+                                clean_bases_np[kept].astype(np.double),
+                                clean_amps_np[kept].astype(np.double))
+            g_fit.SetName(f"g_heat_vs_base_fit_{tag}")
+            res.g_heat_vs_base_trim = ROOT.TGraph(
+                n_trim, clean_bases_np[trim].astype(np.double),
+                clean_amps_np[trim].astype(np.double))
+            res.g_heat_vs_base_trim.SetName(f"g_heat_vs_base_trim_{tag}")
+            res.fit_brange = (float(clean_bases_np[kept].min()),
+                              float(clean_bases_np[kept].max()))
         res.f1 = ROOT.TF1(f"f1_{tag}", "pol1")
-        res.g_heat_vs_base_clean.Fit(res.f1, "Q0 rob=0.90")
+        g_fit.Fit(res.f1, "Q0 rob=0.90")
         fit_slope = res.f1.GetParameter(1)
         fit_q0    = res.f1.GetParameter(0)
 
@@ -3620,9 +3711,24 @@ def run_stabilization(
                     gc.GetXaxis().SetLimits(x0, x1)
                     gc.SetMinimum(y0); gc.SetMaximum(y1)
                 gc.Draw("AP")
+                # leverage outliers excluded from the linear fit: drawn in orange
+                # (they ARE still stabilized as normal events).
+                if r.g_heat_vs_base_trim is not None:
+                    gt = r.g_heat_vs_base_trim
+                    gt.SetMarkerStyle(29); gt.SetMarkerSize(1.8)
+                    gt.SetMarkerColor(ROOT.kOrange + 7)
+                    gt.Draw("P same")
+                    tnote = ROOT.TPaveText(0.14, 0.14, 0.66, 0.20, "NDC")
+                    tnote.SetFillColor(ROOT.kWhite); tnote.SetBorderSize(1)
+                    tnote.SetTextAlign(12); tnote.SetTextFont(42); tnote.SetTextSize(0.035)
+                    tt = tnote.AddText("orange = excluded from the line")
+                    tt.SetTextColor(ROOT.kOrange + 7)
+                    tnote.Draw(); global_lines.append(tnote)
                 if r.f1:
-                    if r.view_clean is not None:
-                        r.f1.SetRange(r.view_clean[0], r.view_clean[1])
+                    lr = r.fit_brange if r.fit_brange is not None else (
+                        r.view_clean[:2] if r.view_clean is not None else None)
+                    if lr is not None:
+                        r.f1.SetRange(lr[0], lr[1])
                     r.f1.SetLineColor(ROOT.kRed); r.f1.SetLineWidth(2); r.f1.Draw("same")
                     lbox = CreateLineBox(r.f1, f"P{r.idx} FIT LINE", ROOT.kRed)
                     lbox.Draw(); global_lines.append(lbox)
@@ -3906,7 +4012,8 @@ def run_stabilization(
                          res1.fit_Tl, res1.fit_alpha, res2.fit_Tl, res2.fit_alpha])
         for r in part_results:
             keep.extend([r.h_heat_orig, r.fit_prelim, r.h_heat_clean, r.fit_clean,
-                         r.g_heat_vs_base_clean, r.f1, r.f1_ext, r.h_heat_stab, r.fit_stab,
+                         r.g_heat_vs_base_clean, r.g_heat_vs_base_trim, r.f1, r.f1_ext,
+                         r.h_heat_stab, r.fit_stab,
                          r.g_heat_vs_base_stab, r.h_heat_cal, r.h_heat_cal_final,
                          r.fit_cal, r.h_before, r.fit_before, r.h_after, r.fit_after])
         GLOBAL_KEEPALIVE.extend([o for o in keep if o is not None])

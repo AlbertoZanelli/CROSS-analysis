@@ -195,7 +195,7 @@ STAB_LINES_TREE_NAME     = "stabilization_lines"
 AMP_TREE_DEFAULT        = "corrected_amplitude"
 AMP_TREE_FALLBACK       = "stabilization_all"
 AMP_TREE_OPTIMUM        = "optimumfilter_all"
-OPTIMUM_FILTER_CHANNELS = [25, 59]   # channels using AMP_TREE_OPTIMUM.heat_amplitude
+OPTIMUM_FILTER_CHANNELS = [25, 59, 53, 66]   # channels using AMP_TREE_OPTIMUM.heat_amplitude
 
 
 # ===========================================================================
@@ -231,8 +231,8 @@ MAX_SCATTER_POINTS = 4000
 # "dominant" peak, which is sometimes the alpha line and sometimes the
 # alpha+recoil line. Falls back to a single found peak, then to the center of
 # the search region.
-CAL_SEARCH_MIN, CAL_SEARCH_MAX = 5200.0, 6200.0  # doublet search region (rough)
-CAL_WIN_WIDTH = 400.0           # width of the single analysis window (rough units),
+CAL_SEARCH_MIN, CAL_SEARCH_MAX = 5200.0, 6300.0  # doublet search region (rough)
+CAL_WIN_WIDTH = 600.0           # width of the single analysis window (rough units),
                                 # centered on the doublet midpoint: wide enough for
                                 # both peaks (~110 keV apart) plus some continuum,
                                 # tight enough to exclude other lines
@@ -332,6 +332,15 @@ CHAIN_SIG_TYPICAL = 0.010
 # constants and same rule as in ThalliumStabilization.py.
 PEAK_SIGNIF_NSIGMA = 2.0
 PEAK_SIGNIF_MIN    = 3.0
+# Channels where the LOCAL peak of a partition must NEVER be trusted, whatever
+# its significance: the combined-spectrum position is used for every partition,
+# exactly as it is when the statistics are too low. Needed where the thallium
+# line is LOW over a strong continuum -- the significance is an excess over the
+# side bands divided by its own fluctuation, so on a channel with many events a
+# continuum shoulder clears the threshold and the partition anchors on it
+# (ch66 partition 0: 4.7 sigma on the wrong structure).
+# Keep this list the SAME in both programs.
+PEAK_HINT_FORCE_CHANNELS = [66]    # e.g. [66]
 # Per-channel settings, on file. Kept SEPARATE from the thallium program's
 # chain_settings.csv: the variables are different (there the whole heater chain,
 # here the two amplitudes of the alpha stabilization), so one file per program
@@ -1625,6 +1634,14 @@ def AnalyzeLightYieldThallium(h_ly, name_ext):
     return res
 
 
+def force_peak_hint(ch_id):
+    """True when this channel's partitions must take the combined-spectrum peak
+    position instead of their own (see PEAK_HINT_FORCE_CHANNELS)."""
+    try:
+        return int(ch_id) in {int(c) for c in PEAK_HINT_FORCE_CHANNELS}
+    except (TypeError, ValueError):
+        return False
+
 def peak_significance(h, center, sigma):
     """
     How well the peak at *center* stands out of the local continuum, in standard
@@ -2285,12 +2302,14 @@ def thallium_partition_peak(amps_p, ch_id, idx, peak_hint=None):
 
     if peak_hint is not None:
         signif = peak_significance(res.h_heat_orig, peak_x, hint_sigma)
-        if signif < PEAK_SIGNIF_MIN:
+        forced = force_peak_hint(ch_id)
+        if forced or signif < PEAK_SIGNIF_MIN:
             peak_x = hint_center
             peak_y = res.h_heat_orig.GetBinContent(
                 res.h_heat_orig.GetXaxis().FindBin(hint_center))
-            print(f"  -> Ch {ch_id} Tl P{idx}: local peak not significant "
-                  f"({signif:.1f} < {PEAK_SIGNIF_MIN} sigma, {n_stab} events); "
+            why = ("channel listed in PEAK_HINT_FORCE_CHANNELS" if forced
+                   else f"local peak not significant ({signif:.1f} < {PEAK_SIGNIF_MIN} sigma)")
+            print(f"  -> Ch {ch_id} Tl P{idx}: {why}, {n_stab} events; "
                   f"position taken from the combined spectrum ({hint_center:.1f}).")
         else:
             print(f"  -> Ch {ch_id} Tl P{idx}: local peak at {peak_x:.1f} "
@@ -2911,6 +2930,36 @@ def FindBaselinePartitions(baseline_vals, ch_id, enabled=True):
 # ===========================================================================
 
 
+def leverage_trim(bases, mad_trim=None):
+    """
+    Mask of the LEVERAGE outliers of a partition: points whose BASELINE lies more
+    than *mad_trim* MADs from the baseline median. They are excluded from the
+    LINE ONLY -- they are still stabilized as normal events -- because an
+    isolated point far from the baseline cluster drags the fit towards itself
+    precisely because of its leverage.
+
+    Never trims so much that the line would rest on a handful of points: the cut
+    is dropped unless it keeps at least half the sample (and at least 4 points).
+    All-False when *mad_trim* is None/0 or the baselines are degenerate.
+    """
+    b = np.asarray(bases, np.float64)
+    trimmed = np.zeros(b.size, dtype=bool)
+    if not mad_trim or b.size < 2:
+        return trimmed
+    ok = np.isfinite(b)
+    bb = b[ok]
+    if bb.size < 2:
+        return trimmed
+    bmed = np.median(bb)
+    mad  = np.median(np.abs(bb - bmed)) * 1.4826
+    if not (mad > 0):
+        return trimmed
+    keep = np.abs(bb - bmed) <= mad_trim * mad
+    if keep.sum() < max(4, int(0.5 * bb.size)):
+        return trimmed
+    trimmed[np.flatnonzero(ok)[~keep]] = True
+    return trimmed
+
 def robust_line(bases, amps, mad_trim=None, max_pairs_points=700):
     """
     Linear fit  amplitude = q0 + slope * baseline: Theil-Sen estimate, slope =
@@ -2931,15 +2980,9 @@ def robust_line(bases, amps, mad_trim=None, max_pairs_points=700):
     if b.size < 2:
         return (float(np.median(a)) if a.size else 0.0), 0.0, trimmed
     if mad_trim:
-        bmed = np.median(b); mad = np.median(np.abs(b - bmed)) * 1.4826
-        keep = np.ones(b.size, dtype=bool)
-        if mad > 0:
-            cand = np.abs(b - bmed) <= mad_trim * mad
-            # never trim so much that the line rests on a handful of points
-            if cand.sum() >= max(4, int(0.5 * b.size)):
-                keep = cand
-        trimmed[np.flatnonzero(ok)[~keep]] = True
-        b, a = b[keep], a[keep]
+        cut = leverage_trim(b, mad_trim)              # same helper as the Tl program
+        trimmed[np.flatnonzero(ok)[cut]] = True
+        b, a = b[~cut], a[~cut]
         if b.size < 2:
             return (float(np.median(a)) if a.size else 0.0), 0.0, trimmed
     # subsample when large: the pairwise-slope set is O(n^2)
@@ -3732,6 +3775,10 @@ def run_stabilization(
               f"on the search-region midpoint ({win_center:.0f} rough).")
     cal_win_min = win_center - 0.5 * CAL_WIN_WIDTH
     cal_win_max = win_center + 0.5 * CAL_WIN_WIDTH
+    
+    cal_win_min = 5650 
+    cal_win_max = 6250
+    
     print(f">>> Analysis window (corr + LY + stab): "
           f"[{cal_win_min:.0f}, {cal_win_max:.0f}] rough.")
 

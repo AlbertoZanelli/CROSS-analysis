@@ -262,7 +262,7 @@ DOUBLET_SEP_TOL = 2.0
 # bin, the two peaks come out ragged and the joint fit can end up describing the
 # lower line twice -- on ch57 partition 0 the stabilization then anchored on the
 # alpha peak instead of the alpha+recoil one. Wider bins average that noise away.
-DOUBLET_BIN_DIV = 2.0
+DOUBLET_BIN_DIV = 0.5
 # Bin counts of the exploratory pass, tried IN ORDER until the doublet is
 # resolved. Fewer bins = WIDER bins = more counts per bin, so a weak partner line
 # rises above the noise instead of being rejected as a fluctuation. On ch65 the
@@ -418,7 +418,7 @@ PART_WARM_MIN_COUNTS = 5      # second, LOW threshold (raw counts) used only to 
 # partition of its own instead of being absorbed. Empty list = use
 # PART_MIN_BLOCK_FRAC everywhere. Keep this list the SAME in both programs, or
 # the two stop splitting the events the same way.
-PART_MIN_BLOCK_FRAC_CHANNELS = [90, 49]    # e.g. [19, 65]
+PART_MIN_BLOCK_FRAC_CHANNELS = [90, 49, 66]    # e.g. [19, 65]
 PART_MIN_BLOCK_FRAC_LOW      = 0.05
 # Fewer clean events than this in a partition: no local line is fitted, the
 # partition inherits the nearest fitted one (a Gaussian and a linear fit need a

@@ -392,7 +392,7 @@ PART_WARM_MIN_COUNTS = 5      # second, LOW threshold (raw counts) used only to 
 # partition of its own instead of being absorbed. Empty list = use
 # PART_MIN_BLOCK_FRAC everywhere. Keep this list the SAME in both programs, or
 # the two stop splitting the events the same way.
-PART_MIN_BLOCK_FRAC_CHANNELS = [57]    # e.g. [19, 65]
+PART_MIN_BLOCK_FRAC_CHANNELS = [90, 52]    # e.g. [19, 65]
 PART_MIN_BLOCK_FRAC_LOW      = 0.05
 
 # --- Thallium-peak search hint (multi-partition) ----------------------------
@@ -426,7 +426,7 @@ PEAK_HINT_FORCE_CHANNELS = [66]    # e.g. [66]
 # baseline (same mechanism as AlphaStabilization.py). The trimmed points are
 # excluded from the LINE ONLY and drawn as orange stars on the scatter; the
 # rob= fit below still trims on the RESIDUALS on top of this. None = off.
-LINE_FIT_MAD_TRIM = 3.0
+LINE_FIT_MAD_TRIM = 3
 # Fewer clean events than this in a partition: no local line is fitted, the
 # partition inherits the nearest fitted one (a Gaussian and a linear fit need a
 # handful of points to mean anything, and zero points cannot even be histogrammed).

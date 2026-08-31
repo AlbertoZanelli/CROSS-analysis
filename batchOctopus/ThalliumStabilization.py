@@ -39,33 +39,27 @@ Pipeline overview
      append the TTree "stabilized_heater_thallium" (one calibrated amplitude
      per event of "corrected_amplitude").
 
-  8. Render two summary canvases. In BATCH mode they are saved as JPEG; in GUI
-     mode they are shown on screen and the user can tweak the manual cuts, then
-     recompute / accept (save JPEG + ROOT) / quit.
+  8. Render the summary canvases and save them as JPEG. ROOT always runs
+     head-less (SetBatch(True)).
 
-Modes
------
-  BATCH  (default; used for the whole folder, an empty channel list, OR a list
-         with MORE THAN ONE channel):
-         ROOT runs head-less (SetBatch(True)); canvases are written to JPEG.
-  GUI    (only when GUI_MANUAL_CUTS is True AND exactly ONE channel is selected):
-         canvases are shown interactively and a Tk dialog edits the cuts.
+Manual cuts
+-----------
+  Values the automatic analysis gets wrong on a channel are corrected from
+  ManualOverrides.py, which writes manual_overrides_<dataset>.csv; this program
+  reads it at start-up (see load_manual_overrides).
 
 Channel selection  (set in __main__)
 ------------------------------------
   CHANNELS_TO_PROCESS : in-code list of channels (numbers after "ch").
-                        []  -> analyse ALL files in BASE_DIR, in batch.
-                        [N] -> single channel (GUI if GUI_MANUAL_CUTS=True).
-                        [N, M, ...] -> several channels, ALWAYS batch.
-  Command-line channels (if given) OVERRIDE CHANNELS_TO_PROCESS and follow the
-  same GUI rule (GUI only when exactly one channel is requested).
+                        []  -> analyse ALL files in BASE_DIR.
+                        [N, M, ...] -> only these channels.
+  Command-line channels (if given) OVERRIDE CHANNELS_TO_PROCESS.
 
 Flags  (set in __main__)
 ------
   SAVE_SUMMARY_JPEG : save the stabilization-overview JPEGs
   SAVE_CORR_JPEG    : save the correlation-analysis JPEGs
   CREATE_ROOT_FILE  : write the stabilized ROOT files
-  GUI_MANUAL_CUTS   : enable the interactive manual-cut GUI (single channel only)
 
 Input
 -----
@@ -109,10 +103,6 @@ import numpy as np
 # -- domain-specific ---------------------------------------------------------
 import ROOT
 
-# -- GUI (only used in interactive mode) -------------------------------------
-import tkinter as tk
-from tkinter import ttk
-
 
 # ===========================================================================
 # GLOBAL SETUP
@@ -123,13 +113,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Histograms are detached from any TFile so they survive file.Close().
 ROOT.TH1.AddDirectory(False)
 
-# Keeps ROOT objects alive in interactive mode (see run_stabilization). The
-# Python garbage collector would otherwise free histograms/graphs/fits and the
-# on-screen canvas would go blank at the first repaint.
-GLOBAL_KEEPALIVE = []
-
-# NB: the ROOT batch mode (off-screen rendering) is decided in __main__ from the
-# run mode: ON for batch analysis, OFF when the interactive GUI is active.
+# Off-screen rendering: every canvas is written to JPEG, none is ever shown.
+ROOT.gROOT.SetBatch(True)
 
 
 # ===========================================================================
@@ -139,7 +124,7 @@ GLOBAL_KEEPALIVE = []
 # --- Analysis mode ----------------------------------------------------------
 # "mergedrun"     : files in BASE_DIR named like 000097_000128_ch25_73_74.root
 #                   (channel = the number after "ch").
-# "run"           : a single run; files in <CROSS_DIR>/RUN<NNNNNN>/Coincidence
+# "run"           : a single run; files in <CROSS_DIR>/RUN<NNNNNN>/<RUN_SUBDIR>
 #                   named like 25_73_74_000096.root (channel = the FIRST number).
 #                   The run folder is built from RUN_NUMBER, zero-padded to 6 digits.
 # "calibrationrun": same files/paths/parsing as "run", but the LY cut uses the
@@ -153,13 +138,30 @@ BASE_DIR = "/data/users/azanelli/octopus_work/CROSS/MergedRuns/CorrectedAmp"  # 
 BASE_DIR_PERSONAL = "/Users/albertozanelli/Desktop/Tesi_Erasmus/CROSS-analysis/CROSS/MergedRuns/CorrectedAmp"
 
 # run mode: CROSS folder holding the RUNxxxxxx sub-folders, and the run number.
-CROSS_DIR  = "/data/users/azanelli/octopus_work/CROSS-analysis/CROSS"
-RUN_NUMBER = 92                 # e.g. 96 -> folder RUN000096, sub-folder Coincidence
+CROSS_DIR  = "/data/users/azanelli/octopus_work/CROSS"
+RUN_NUMBER = 92                 # e.g. 96 -> folder RUN000096
+# Sub-folder of RUN<NNNNNN> holding the input .root files:
+#   "CorrectedAmp" -> the pulser-corrected files written by
+#                     BaselineJumpAmoreApproach.py in MODE="run" (<stem>_corr.root),
+#                     the run-mode equivalent of MergedRuns/CorrectedAmp;
+#   "Coincidence"  -> the raw coincidence files, no amplitude correction.
+# The channel is the FIRST number of the name either way, and the outputs land in
+# RUN<NNNNNN>/ThalliumStabilizedAmp (the paths below are relative to this folder).
+RUN_SUBDIR = "CorrectedAmp"
+
+# --- Manual overrides (written by ManualOverrides.py) -----------------------
+# Per-channel values that REPLACE the automatic ones: correlation cut, light
+# detector and LY window, and the cleaning window of EACH baseline partition.
+# The file is tied to the DATASET being analysed (see dataset_tag): the cuts
+# hand-tuned on the merged run mean nothing on a single run, so they must never
+# leak from one to the other. A missing row, or an empty cell, means "keep the
+# automatic value", so the file only ever holds what was actually tuned by hand.
+USE_MANUAL_OVERRIDES = True
+MANUAL_OVERRIDES_DIR = SCRIPT_DIR
 
 # --- Channels to analyse (number after "ch" in the file name) ---------------
-#   []          -> process ALL files in BASE_DIR (batch).
-#   [N]         -> single channel; GUI if GUI_MANUAL_CUTS is True.
-#   [N, M, ...] -> several channels, always batch.
+#   []          -> process ALL files in BASE_DIR.
+#   [N, M, ...] -> only these channels.
 # Command-line channels (if given) OVERRIDE this list.
 CHANNELS_TO_PROCESS = [19, 20, 21, 22, 23, 24, 49, 50, 51, 52, 53, 54, 85, 86, 87, 88, 89, 90, 61, 62, 63, 64, 65, 66, 25, 26, 27, 28, 29, 30, 55, 56, 57, 58, 59, 60]
 
@@ -170,7 +172,6 @@ SAVE_SUMMARY_JPEG   = True    # per-channel debug JPEGs (global, partitions, bef
 SAVE_CORR_JPEG      = True    # correlation-analysis JPEGs
 SAVE_PARTITION_JPEG = True    # baseline-partition debug JPEG
 CREATE_ROOT_FILE    = True    # write the stabilized ROOT files
-GUI_MANUAL_CUTS     = False   # interactive manual-cut GUI (active only with a single channel)
 
 # Baseline partitioning: when False the dataset is NOT split by baseline and a
 # single stabilization is performed over the whole baseline range.
@@ -230,6 +231,13 @@ CORR_DIR_NAME      = os.path.join("..", "ThalliumStabilizedAmp/CorrelationCut") 
 SAVE_RES_CSV      = True
 RES_CSV_DIR_NAME  = os.path.join("..", "ThalliumStabilizedAmp")   # folder of the CSV
 RES_CSV_NAME      = "thallium_resolutions.csv"                    # (+ calib suffix)
+# Per-PARTITION resolutions of the Tl line, BEFORE (partition rescaled on its own
+# peak) and AFTER the stabilization, plus the same two spectra with all partitions
+# MERGED and a third one with NO partitioning at all. Together they say how much of
+# the final gain is the stabilization and how much is just analysing the partitions
+# apart (see PlotThalliumResolutions.py, in-partition vs total gain).
+SAVE_PART_RES_CSV = True
+PART_RES_CSV_NAME = "thallium_partition_resolutions.csv"          # (+ calib suffix)
 # Baseline partitions of each channel, written next to the results table. The
 # alpha-stabilization program reads them so that its partitioning is IDENTICAL
 # to the one used here -- comparing the two stabilizations only means something
@@ -455,15 +463,125 @@ def resolve_scan_dir():
     """
     Folder to scan for input .root files, depending on ANALYSIS_MODE:
       "mergedrun"               -> BASE_DIR
-      "run" / "calibrationrun"  -> <CROSS_DIR>/RUN<NNNNNN>/Coincidence  (6 digits)
+      "run" / "calibrationrun"  -> <CROSS_DIR>/RUN<NNNNNN>/<RUN_SUBDIR>  (6 digits)
     """
     if ANALYSIS_MODE in ("run", "calibrationrun"):
-        return os.path.join(CROSS_DIR, f"RUN{int(RUN_NUMBER):06d}", "Coincidence")
+        return os.path.join(CROSS_DIR, f"RUN{int(RUN_NUMBER):06d}", RUN_SUBDIR)
     
     if not os.path.isdir(BASE_DIR):
         return BASE_DIR_PERSONAL
     
     return BASE_DIR
+
+
+def dataset_tag():
+    """
+    Identifier of the DATASET being analysed: "mergedrun", or "run<N>" for a
+    single run. It names the manual-overrides file. "run" and "calibrationrun"
+    share a tag on purpose: they are two ways of analysing the SAME data, so a
+    cut tuned in one is right in the other.
+    """
+    if ANALYSIS_MODE in ("run", "calibrationrun"):
+        return f"run{int(RUN_NUMBER)}"
+    return "mergedrun"
+
+
+def manual_overrides_path():
+    """Path of the manual-overrides CSV of the dataset being analysed."""
+    return os.path.join(MANUAL_OVERRIDES_DIR,
+                        f"manual_overrides_{dataset_tag()}.csv")
+
+
+# Long format -- one row per overridden value -- so a channel with five
+# partitions does not need five pairs of columns and a hand-edited file never
+# has to be re-shaped when the partitioning changes. An EMPTY partition cell
+# marks a channel-level value.
+MANUAL_OVERRIDES_FIELDS = ["channel", "partition", "parameter", "value"]
+MANUAL_CHANNEL_PARAMS   = ("corr_cut", "chosen_ld", "ly_cut_min", "ly_cut_max")
+# Per-partition:
+#   heat_cut_min/max  the cleaning window (which events feed the line fit)
+#   line_from         use the line of ANOTHER partition instead of fitting one
+#                     here -- for a partition too poor to give a trustworthy
+#                     slope, whose events are still worth stabilizing
+#   drop              1 = the partition's events are left OUT of the combined
+#                     results (spectra, resolutions, both CSVs). It is still
+#                     analysed and drawn, so what was thrown away stays visible.
+MANUAL_PARTITION_PARAMS = ("heat_cut_min", "heat_cut_max", "line_from", "drop")
+# Baseline boundaries added by hand: one row per boundary, the partition cell
+# holding its ordinal. When a channel has any, they REPLACE the boundaries
+# FindBaselinePartitions found -- the automatic search separates only clearly
+# detached blocks, and a channel whose clusters touch has to be split by eye.
+MANUAL_EDGE_PARAM = "partition_edge"
+
+
+def load_manual_overrides(path=None):
+    """
+    Read the manual-overrides CSV into
+
+        {channel: {param: value, ..., "heat": {partition: {param: value}}}}
+
+    with *channel* a string (as parsed from the file names). A missing file
+    gives {}. A row with an unknown parameter, an unparsable number or a
+    partition index on a channel-level parameter is REPORTED and skipped: a typo
+    in a hand-edited file must never change the analysis silently.
+    """
+    path = path or manual_overrides_path()
+    out = {}
+    if not os.path.exists(path):
+        return out
+    try:
+        with open(path, newline="") as fh:
+            rows = list(csv.DictReader(fh))
+    except OSError as e:
+        print(f"  [!] Cannot read {path}: {e}", file=sys.stderr)
+        return out
+
+    n_bad = 0
+    for r in rows:
+        ch  = str(r.get("channel", "")).strip()
+        par = str(r.get("parameter", "")).strip()
+        pstr = str(r.get("partition", "")).strip()
+        raw = str(r.get("value", "")).strip()
+        if not ch or not par or raw == "":
+            continue
+        try:
+            val = int(raw) if par == "chosen_ld" else float(raw)
+        except ValueError:
+            print(f"  [!] {os.path.basename(path)}: ch {ch} '{par}' = '{raw}' is "
+                  f"not a number; ignored.", file=sys.stderr)
+            n_bad += 1
+            continue
+        d = out.setdefault(ch, {})
+        if par == MANUAL_EDGE_PARAM:
+            d.setdefault("edges", []).append(val)
+            continue
+        if par in MANUAL_CHANNEL_PARAMS:
+            if pstr:
+                print(f"  [!] {os.path.basename(path)}: ch {ch} '{par}' is a "
+                      f"channel-level value but carries partition {pstr}; "
+                      f"the partition is ignored.", file=sys.stderr)
+            d[par] = val
+        elif par in MANUAL_PARTITION_PARAMS:
+            try:
+                idx = int(pstr)
+            except ValueError:
+                print(f"  [!] {os.path.basename(path)}: ch {ch} '{par}' needs a "
+                      f"partition index, got '{pstr}'; ignored.", file=sys.stderr)
+                n_bad += 1
+                continue
+            d.setdefault("part", {}).setdefault(idx, {})[par] = val
+        else:
+            print(f"  [!] {os.path.basename(path)}: unknown parameter '{par}' "
+                  f"(ch {ch}); ignored.", file=sys.stderr)
+            n_bad += 1
+    for d in out.values():
+        if "edges" in d:
+            d["edges"] = sorted(d["edges"])
+    if out or n_bad:
+        print(f">>> Manual overrides: {len(out)} channel(s) from "
+              f"{os.path.basename(path)}"
+              + (f", {n_bad} bad row(s) skipped." if n_bad else "."))
+    return out
 
 
 def parse_channel_id(filename):
@@ -533,87 +651,6 @@ def save_canvas_jpeg(canvas, out_path):
         except Exception as e2:
             print(f"  [!] PNG fallback also failed: {e2}", file=sys.stderr)
             return False
-
-
-# ===========================================================================
-# GUI  (interactive manual-cut editor)
-# ===========================================================================
-
-class ParamEditorApp:
-    """
-    Tk dialog used in interactive mode to override the automatic cuts.
-
-    The user can leave fields empty (keep the automatic value) or type a value
-    for: chosen light detector (1/2), LY window [min, max], and the heat
-    pre-cleaning window [min, max]. The three buttons map to the actions
-    'recalc', 'accept' and 'quit', returned by run().
-    """
-    def __init__(self, ch_id, current_cuts):
-        self.action = None
-        self.manual_cuts = current_cuts.copy() if current_cuts else {}
-        self.tk_root = tk.Tk()
-        self.tk_root.title(f"Parametri - Ch {ch_id}")
-        self.tk_root.geometry("380x380")
-
-        frame = ttk.LabelFrame(self.tk_root, text="Tagli Manuali (lascia vuoto per default)")
-        frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        self.entries = {}
-        fields = [
-            ("chosen_ld", "Canale LD (1 o 2):"),
-            ("ly_cut_min", "LY cut min:"),
-            ("ly_cut_max", "LY cut max:"),
-            ("heat_cut_min", "Heat cleaning min:"),
-            ("heat_cut_max", "Heat cleaning max:")
-        ]
-
-        for key, label in fields:
-            f = ttk.Frame(frame)
-            f.pack(fill="x", pady=5, padx=5)
-            ttk.Label(f, text=label, width=18).pack(side="left")
-            e = ttk.Entry(f)
-            e.pack(side="right", fill="x", expand=True)
-            if key in self.manual_cuts:
-                e.insert(0, str(self.manual_cuts[key]))
-            self.entries[key] = e
-
-        btn_frame = ttk.Frame(self.tk_root)
-        btn_frame.pack(fill="x", padx=10, pady=10)
-
-        ttk.Button(btn_frame, text="Ricalcola", command=lambda: self.set_action('recalc')).pack(fill="x", pady=2)
-        ttk.Button(btn_frame, text="Accetta e Salva (ROOT + JPEG)", command=lambda: self.set_action('accept')).pack(fill="x", pady=2)
-        ttk.Button(btn_frame, text="Esci dallo Script", command=lambda: self.set_action('quit')).pack(fill="x", pady=10)
-
-        self.tk_root.protocol("WM_DELETE_WINDOW", lambda: self.set_action('quit'))
-
-    def get_values(self):
-        """Read the entry fields into self.manual_cuts (empty -> remove key)."""
-        for key, e in self.entries.items():
-            val = e.get().strip()
-            if val: self.manual_cuts[key] = float(val) if 'ly' in key or 'heat' in key else int(val)
-            elif key in self.manual_cuts: del self.manual_cuts[key]
-
-    def set_action(self, act):
-        """Store the chosen action, commit field values and close the window."""
-        self.get_values()
-        self.action = act
-        self.tk_root.destroy()
-
-    def run(self):
-        """
-        Pump the Tk and ROOT event loops until the user picks an action.
-        Returns (action, manual_cuts).
-        """
-        while self.action is None:
-            try:
-                self.tk_root.update_idletasks()
-                self.tk_root.update()
-            except tk.TclError:
-                if self.action is None: self.action = 'quit'
-                break
-            ROOT.gSystem.ProcessEvents()
-            time.sleep(0.02)
-        return self.action, self.manual_cuts
 
 
 # ===========================================================================
@@ -1591,11 +1628,20 @@ def shared_before_after_fits(before_e, after_e, center, tag, sig_hint=None,
         nb_stat = max(1, round(n_min / BA_TARGET_PER_BIN))
         nb = min(nb, nb_stat)
     nb = int(np.clip(nb, BA_MIN_BINS, BA_MAX_BINS))
+    # Width band: ABSOLUTE, [CHAIN_SIG_LO, CHAIN_SIG_HI] x the reference width.
+    # It must NOT be derived from the seed here: before and after share ONE seed,
+    # so a seed-derived band pins both fits to the same bound and the two report
+    # the SAME resolution -- the very comparison the panels exist for (the same
+    # trap as the chain panels, see fit_thallium_peak). Tied to a measured width
+    # the band still keeps the Gaussian off the continuum.
+    bounds = (CHAIN_SIG_LO * sig_win, CHAIN_SIG_HI * sig_win)
     h_b = f_b = h_a = f_a = None
     if before_e is not None:
-        h_b, f_b = fit_thallium_peak(before_e, center, lo, hi, nb, sig_seed, f"{tag}_before")
+        h_b, f_b = fit_thallium_peak(before_e, center, lo, hi, nb, sig_seed,
+                                     f"{tag}_before", sigma_bounds=bounds)
     if after_e is not None:
-        h_a, f_a = fit_thallium_peak(after_e, center, lo, hi, nb, sig_seed, f"{tag}_after")
+        h_a, f_a = fit_thallium_peak(after_e, center, lo, hi, nb, sig_seed,
+                                     f"{tag}_after", sigma_bounds=bounds)
     return h_b, f_b, h_a, f_a
 
 
@@ -1669,7 +1715,7 @@ class ChainSettings:
     # when a column is not plotted (e.g. the heater one on an optimum-filter channel).
     KEYS   = ("rough", "heater", "corrected", "stabilized")
     FIELDS = (*(f"win_scale_{k}" for k in KEYS), *(f"bin_div_{k}" for k in KEYS),
-              *(f"sig_scale_{k}" for k in KEYS),
+              *(f"sig_scale_{k}" for k in KEYS), *(f"bins_{k}" for k in KEYS),
               "peak_nsigma", "sig_lo", "sig_hi")
 
     def __init__(self, values=None):
@@ -1677,6 +1723,7 @@ class ChainSettings:
             *(list(CHAIN_WIN_SCALE) + [1.0] * 4)[:4],
             *(list(CHAIN_BIN_DIV)   + [4.0] * 4)[:4],
             *(list(CHAIN_SIG_SCALE) + [1.0] * 4)[:4],
+            *([0.0] * 4),
             CHAIN_PEAK_NSIGMA, CHAIN_SIG_LO, CHAIN_SIG_HI]))
         if values:
             for k in self.FIELDS:
@@ -1696,6 +1743,18 @@ class ChainSettings:
     def sig_scale(self, key):
         """Scale of the EXPECTED width for the chain variable *key*."""
         return getattr(self, f"sig_scale_{key}", 1.0)
+
+    def bins(self, key):
+        """
+        Bin COUNT asked for on this variable's peak panels, 0 = automatic.
+
+        The automatic count comes out of the bin WIDTH (sigma / bin_div) and of
+        how wide the window is, so asking for "more bins" through bin_div means
+        recomputing it every time the window changes. A count set here is used as
+        it is, which is what one actually wants when reading a panel: it is the
+        knob ManualOverrides.py exposes.
+        """
+        return getattr(self, f"bins_{key}", 0.0)
 
     def as_row(self, ch_id):
         row = {"channel": ch_id}
@@ -1785,7 +1844,8 @@ RES_CSV_FIELDS = [
     "channel", "step", "variable", "label", "row", "background",
     "mu", "mu_err", "sigma", "sigma_err", "fwhm", "fwhm_err",
     "resolution_pct", "resolution_err_pct",
-    "chi2", "ndf", "prob", "n_peak", "n_hist", "win_frac", "res_exp", "date",
+    "chi2", "ndf", "prob", "n_peak", "n_hist", "n_bins", "win_frac", "res_exp",
+    "date",
 ]
 
 
@@ -1804,7 +1864,7 @@ def _res_csv_sort_key(r):
             str(r.get("background", "")))
 
 
-def write_resolution_csv(path, ch_id, new_rows):
+def write_resolution_csv(path, ch_id, new_rows, fields=None, sort_key=None):
     """
     Write this channel's fit results to the results CSV at *path*.
 
@@ -1822,11 +1882,11 @@ def write_resolution_csv(path, ch_id, new_rows):
         except OSError as e:
             print(f"  [!] Cannot read {path}: {e}", file=sys.stderr)
 
-    rows = sorted(old + list(new_rows), key=_res_csv_sort_key)
+    rows = sorted(old + list(new_rows), key=sort_key or _res_csv_sort_key)
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=RES_CSV_FIELDS,
+            w = csv.DictWriter(fh, fieldnames=fields or RES_CSV_FIELDS,
                                restval="nan", extrasaction="ignore")
             w.writeheader()
             w.writerows(rows)
@@ -1835,6 +1895,91 @@ def write_resolution_csv(path, ch_id, new_rows):
     except OSError as e:
         print(f"  [!] Cannot write {path}: {e}", file=sys.stderr)
 
+
+
+PART_RES_CSV_FIELDS = [
+    "channel", "partition", "phase", "n_events", "baseline_lo", "baseline_hi",
+    "mu", "mu_err", "sigma", "sigma_err", "fwhm", "fwhm_err",
+    "resolution_pct", "resolution_err_pct",
+    "chi2", "ndf", "prob", "n_peak", "n_hist", "date",
+]
+
+
+def _part_res_sort_key(r):
+    """Order of the per-partition table: channel, partition (merged last), phase."""
+    def _int(v, default):
+        try:
+            return int(str(v).strip())
+        except (TypeError, ValueError):
+            return default
+    return (_int(r.get("channel"), 1 << 30),
+            _int(str(r.get("partition", "")).lstrip("P"), 1 << 30),
+            {"nopart": 0, "before": 1}.get(str(r.get("phase", "")), 2))
+
+
+def collect_partition_resolution_rows(ch_id, part_results, merged=None,
+                                      nopart=None):
+    """
+    One CSV row per (partition, phase) of the thallium line:
+
+      before : the partition's window events rescaled on the partition's OWN peak
+               -- the resolution of analysing the partitions separately, without
+               any stabilization;
+      after  : the same events stabilized on the baseline.
+
+    *merged* is (h_before, fit_before, h_after, fit_after) of the SAME two spectra
+    with all partitions merged, written as partition "merged". *nopart* is the
+    same tuple for the same events rescaled on ONE global peak, i.e. with no
+    partitioning at all, written as phase "nopart" of partition "merged". The
+    three merged numbers split the total gain in two:
+
+        nopart -> before   gain of the PARTITIONING alone
+        before -> after    gain of the STABILIZATION
+
+    and all three come from the same fit recipe, so the differences mean
+    something (the chain table's "corrected" panel does not: it is fitted with
+    the chain windows and the per-channel chain settings).
+    """
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def num(v, fmt="{:.6g}"):
+        return fmt.format(v) if (v is not None and math.isfinite(v)) else "nan"
+
+    rows = []
+
+    def add(tag, phase, fit, hist, n_ev, blo, bhi):
+        m = fit_metrics(fit, hist)
+        if m is None:
+            return
+        rows.append({
+            "channel": ch_id, "partition": tag, "phase": phase,
+            "n_events": int(n_ev), "baseline_lo": num(blo), "baseline_hi": num(bhi),
+            "mu": num(m["mu"]),           "mu_err": num(m["mu_err"]),
+            "sigma": num(m["sigma"]),     "sigma_err": num(m["sigma_err"]),
+            "fwhm": num(m["fwhm"]),       "fwhm_err": num(m["fwhm_err"]),
+            "resolution_pct": num(m["res"], "{:.4f}"),
+            "resolution_err_pct": num(m["res_err"], "{:.4f}"),
+            "chi2": num(m["chi2"], "{:.3f}"), "ndf": m["ndf"],
+            "prob": num(m["prob"], "{:.4f}"),
+            "n_peak": num(m["n_peak"], "{:.2f}"),
+            "n_hist": num(m["n_hist"], "{:.0f}"),
+            "date": stamp,
+        })
+
+    # A dropped partition is not in the merged spectra, so its own rows would
+    # not add up with them: it is left out of the table as well.
+    part_results = [r for r in part_results if not r.dropped]
+    for r in part_results:
+        add(f"P{r.idx}", "before", r.fit_before, r.h_before, r.all_amps.size, r.blo, r.bhi)
+        add(f"P{r.idx}", "after",  r.fit_after,  r.h_after,  r.all_amps.size, r.blo, r.bhi)
+    n_tot = sum(int(r.all_amps.size) for r in part_results)
+    if nopart:
+        add("merged", "nopart", nopart[1], nopart[0], n_tot, float("nan"), float("nan"))
+    if merged:
+        h_b, f_b, h_a, f_a = merged
+        add("merged", "before", f_b, h_b, n_tot, float("nan"), float("nan"))
+        add("merged", "after",  f_a, h_a, n_tot, float("nan"), float("nan"))
+    return rows
 
 
 def collect_resolution_rows(ch_id, chain):
@@ -1873,6 +2018,9 @@ def collect_resolution_rows(ch_id, chain):
                 "prob": num(m["prob"], "{:.4f}"),
                 "n_peak": num(m["n_peak"], "{:.2f}"),
                 "n_hist": num(m["n_hist"], "{:.0f}"),
+                # Bins the panel was actually drawn with: ManualOverrides.py shows
+                # it as the starting point of "numero di bin".
+                "n_bins": (p[hkey].GetNbinsX() if p.get(hkey) is not None else "nan"),
                 "win_frac": num(p["interval"][0], "{:.8f}"),
                 "res_exp":  num(p["interval"][1], "{:.8f}"),
                 "date": stamp,
@@ -1999,8 +2147,14 @@ def fit_peak_centred(values, mu, tag, interval, cfg, key):
             lo, hi = mu * (1.0 - frac), mu * (1.0 + frac)
         else:                                      # no partition peak available
             lo, hi = mu - CHAIN_WIN_NSIGMA * sigma, mu + CHAIN_WIN_NSIGMA * sigma
-        nb = int(np.clip(round((hi - lo) / (sigma / cfg.bin_div(key))),
-                         CHAIN_MIN_BINS, CHAIN_MAX_BINS))
+        n_want = int(cfg.bins(key))
+        if n_want > 0:
+            # Asked for explicitly: used as it is, only kept inside a range where
+            # a Gaussian can still be fitted at all.
+            nb = int(np.clip(n_want, 5, 2000))
+        else:
+            nb = int(np.clip(round((hi - lo) / (sigma / cfg.bin_div(key))),
+                             CHAIN_MIN_BINS, CHAIN_MAX_BINS))
         # The last pass keeps *tag*, so the objects that are drawn carry the
         # expected name; the first one is only used to locate the peak.
         h, f = fit_thallium_peak(values, mu, lo, hi, nb, sigma,
@@ -2256,6 +2410,16 @@ class StabResult:
         self.mean_amp_clean  = 0.0
         self.peak_x          = 0.0     # preliminary thallium-peak amplitude
         self.peak_sigma      = 0.0     # preliminary thallium-peak sigma
+        # Cleaning window actually used (the events that enter the line fit), and
+        # whether it came from the overrides file: drawn on the debug image, so
+        # what a hand-tuned window selects can be checked by eye.
+        self.heat_cut_min    = 0.0
+        self.heat_cut_max    = 0.0
+        self.heat_manual     = False
+        self.bin_params      = None    # binning of the clean peak (apply_stabilization_line)
+        self.n_line_pass     = 0       # how many times the line has been applied
+        self.line_from       = None    # partition its line was copied from, if any
+        self.dropped         = False   # events excluded from the combined results
         self.a_stab_cal      = np.array([], dtype=np.float64)  # calibrated AFTER stabilization
         self.clean_amps      = np.array([], dtype=np.float64)  # clean thallium amplitudes BEFORE stabilization
         self.clean_bases     = np.array([], dtype=np.float64)  # baselines of the clean thallium events
@@ -2291,8 +2455,91 @@ class StabResult:
         self.fit_cal              = None
 
 
+def apply_stabilization_line(res, ch_id):
+    """
+    Build everything that DEPENDS ON THE LINE (res.slope, res.q_0): the
+    stabilized amplitudes, the amplitude-vs-baseline scatter after the
+    stabilization, the stabilized and the calibrated peaks, and the counts under
+    the peak.
+
+    Kept apart from the fitting so it can be run AGAIN when the line changes
+    after the fact -- a partition that inherits a neighbour's line (the fallback
+    in run_stabilization) or one told to reuse another partition's (line_from in
+    the manual overrides). Without this the drawn "AFTER stabilization" panels
+    would still show the line the partition was originally given.
+    """
+    res.n_line_pass += 1
+    tag = f"{ch_id}_p{res.idx}_{res.n_line_pass}"
+
+    # --- apply stabilization ------------------------------------------------
+    expected_old = res.q_0 + res.slope * res.clean_bases
+    with np.errstate(divide='ignore', invalid='ignore'):
+        a_stab     = res.mean_amp_clean * res.clean_amps / expected_old
+        a_stab_cal = TARGET_ENERGY      * res.clean_amps / expected_old
+
+    fin_mask   = np.isfinite(a_stab) & np.isfinite(a_stab_cal)
+    a_stab     = a_stab[fin_mask]
+    a_stab_cal = a_stab_cal[fin_mask]
+    bases_stab = res.clean_bases[fin_mask]
+    res.a_stab_cal = a_stab_cal
+    n_stab_fin = len(a_stab)
+
+    res.view_stab = padded_view(bases_stab, a_stab)
+    res.g_heat_vs_base_stab = ROOT.TGraph(n_stab_fin,
+                                          bases_stab.astype(np.double),
+                                          a_stab.astype(np.double))
+    res.g_heat_vs_base_stab.SetName(f"g_heat_vs_base_stab_{tag}")
+    res.g_heat_vs_base_stab.SetTitle(
+        f"Ch {ch_id} P{res.idx}: Amplitude vs Baseline (after stab.);Baseline;Amplitude")
+
+    res.h_heat_stab.Reset()
+    if n_stab_fin > 0:
+        res.h_heat_stab.FillN(n_stab_fin, a_stab.astype(np.double),
+                              np.ones(n_stab_fin, np.double))
+
+    res.fit_stab = ROOT.TF1(f"fit_stab_{tag}", "gaus",
+                            res.mean_amp_clean - 5.0 * res.bin_params.robust_sigma,
+                            res.mean_amp_clean + 5.0 * res.bin_params.robust_sigma)
+    res.fit_stab.SetParameters(res.h_heat_stab.GetMaximum(),
+                               res.mean_amp_clean, res.bin_params.robust_sigma)
+    res.h_heat_stab.Fit(res.fit_stab, "Q0 R L")
+
+    # --- calibrated histogram -----------------------------------------------
+    params_cal = GetCenteredBinning(a_stab_cal.tolist(), TARGET_ENERGY)
+    res.h_heat_cal = ROOT.TH1F(
+        f"h_heat_cal_{tag}",
+        f"Ch {ch_id} P{res.idx}: Calibrated & Stabilized Thallium Peak;Energy (keV);Counts",
+        params_cal.bins, params_cal.vis_min, params_cal.vis_max)
+    res.h_heat_cal.SetDirectory(0)
+    if n_stab_fin > 0:
+        res.h_heat_cal.FillN(n_stab_fin, a_stab_cal.astype(np.double),
+                             np.ones(n_stab_fin, np.double))
+
+    fit_min_cal = params_cal.median - 5.0 * params_cal.robust_sigma
+    fit_max_cal = params_cal.median + 5.0 * params_cal.robust_sigma
+    res.fit_cal = ROOT.TF1(f"fit_cal_{tag}", "gaus", fit_min_cal, fit_max_cal)
+    res.fit_cal.SetParameters(res.h_heat_cal.GetMaximum(),
+                              params_cal.median, params_cal.robust_sigma)
+    res.h_heat_cal.Fit(res.fit_cal, "Q0 R L")
+
+    res.h_heat_cal_final = res.h_heat_cal.Clone(f"h_heat_cal_final_{tag}")
+    res.h_heat_cal_final.Reset()
+    mask_cal_win = (a_stab_cal >= fit_min_cal) & (a_stab_cal <= fit_max_cal)
+    n_cal_win    = int(mask_cal_win.sum())
+    if n_cal_win > 0:
+        res.h_heat_cal_final.FillN(n_cal_win, a_stab_cal[mask_cal_win].astype(np.double),
+                                   np.ones(n_cal_win, np.double))
+
+    if res.g_heat_vs_base_clean.GetN() > 3 and res.h_heat_cal.GetEntries() > 0:
+        res.gaussian_counts = (res.fit_cal.GetParameter(0) * res.fit_cal.GetParameter(2)
+                               * math.sqrt(2 * math.pi)
+                               / res.h_heat_cal.GetXaxis().GetBinWidth(1))
+    else:
+        res.gaussian_counts = float(res.n_clean)
+
+
 def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
-                      manual_cuts=None, apply_heat_manual=False, peak_hint=None,
+                      manual_cuts=None, peak_hint=None,
                       ext_line=None):
     """
     Run the full stabilization on ONE baseline partition.
@@ -2309,8 +2556,8 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
     bases_for_stab : matching baselines.
     ch_id, idx     : channel id and partition index (object naming / titles).
     blo, bhi       : baseline interval bounds (titles only).
-    manual_cuts    : optional manual-cut dict (heat window honoured only when
-                     apply_heat_manual is True, i.e. a single partition).
+    manual_cuts    : optional manual-cut dict for this channel, as
+                     load_manual_overrides() returns it.
     peak_hint      : optional (center, sigma) of the thallium peak found on the
                      COMBINED (all-partition) spectrum. When given, the peak
                      search of THIS partition is restricted to center +/-
@@ -2396,9 +2643,21 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
 
     heat_cut_min = mean_heat_prelim - HEAT_CLEAN_NSIGMA * sigma_heat_prelim
     heat_cut_max = mean_heat_prelim + HEAT_CLEAN_NSIGMA * sigma_heat_prelim
-    if manual_cuts and apply_heat_manual:
-        if manual_cuts.get('heat_cut_min') is not None: heat_cut_min = manual_cuts['heat_cut_min']
-        if manual_cuts.get('heat_cut_max') is not None: heat_cut_max = manual_cuts['heat_cut_max']
+    # Manual cleaning window of THIS partition, from the overrides file.
+    # Only the CLEANING keys count as a manual window: a partition carrying only
+    # line_from or drop must not be labelled "manual" on the debug image.
+    hm = (manual_cuts or {}).get("part", {}).get(idx) or {}
+    if hm.get('heat_cut_min') is not None or hm.get('heat_cut_max') is not None:
+        heat_cut_min = hm.get('heat_cut_min', heat_cut_min)
+        heat_cut_max = hm.get('heat_cut_max', heat_cut_max)
+        manual_window = True
+        print(f"  -> Ch {ch_id} P{idx}: MANUAL cleaning window "
+              f"[{heat_cut_min:.1f}, {heat_cut_max:.1f}].")
+    else:
+        manual_window = False
+
+    res.heat_cut_min, res.heat_cut_max = heat_cut_min, heat_cut_max
+    res.heat_manual = manual_window
 
     # --- outlier cleaning ---------------------------------------------------
     clean_mask     = (amps_for_stab >= heat_cut_min) & (amps_for_stab <= heat_cut_max)
@@ -2408,6 +2667,7 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
 
     params_clean = GetCenteredBinning(clean_amps_np.tolist(),
                                       heat_min + (heat_max - heat_min) / 2.0)
+    res.bin_params = params_clean
     res.h_heat_clean = ROOT.TH1F(
         f"h_heat_clean_{tag}",
         f"Ch {ch_id} P{idx}: Thallium Peak BEFORE stabilization;Amplitude;Counts",
@@ -2513,70 +2773,7 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
     else:
         res.slope, res.q_0 = fit_slope, fit_q0
 
-    # --- apply stabilization ------------------------------------------------
-    expected_old = res.q_0 + res.slope * clean_bases_np
-    with np.errstate(divide='ignore', invalid='ignore'):
-        a_stab     = res.mean_amp_clean * clean_amps_np / expected_old
-        a_stab_cal = TARGET_ENERGY      * clean_amps_np / expected_old
-
-    fin_mask   = np.isfinite(a_stab) & np.isfinite(a_stab_cal)
-    a_stab     = a_stab[fin_mask]
-    a_stab_cal = a_stab_cal[fin_mask]
-    bases_stab = clean_bases_np[fin_mask]
-    res.a_stab_cal = a_stab_cal
-    n_stab_fin = len(a_stab)
-
-    res.view_stab = padded_view(bases_stab, a_stab)
-    res.g_heat_vs_base_stab = ROOT.TGraph(n_stab_fin,
-                                          bases_stab.astype(np.double),
-                                          a_stab.astype(np.double))
-    res.g_heat_vs_base_stab.SetName(f"g_heat_vs_base_stab_{tag}")
-    res.g_heat_vs_base_stab.SetTitle(
-        f"Ch {ch_id} P{idx}: Amplitude vs Baseline (after stab.);Baseline;Amplitude")
-
-    if n_stab_fin > 0:
-        res.h_heat_stab.FillN(n_stab_fin, a_stab.astype(np.double),
-                              np.ones(n_stab_fin, np.double))
-
-    res.fit_stab = ROOT.TF1(f"fit_stab_{tag}", "gaus",
-                            res.mean_amp_clean - 5.0 * params_clean.robust_sigma,
-                            res.mean_amp_clean + 5.0 * params_clean.robust_sigma)
-    res.fit_stab.SetParameters(res.h_heat_stab.GetMaximum(),
-                               res.mean_amp_clean, params_clean.robust_sigma)
-    res.h_heat_stab.Fit(res.fit_stab, "Q0 R L")
-
-    # --- calibrated histogram -----------------------------------------------
-    params_cal = GetCenteredBinning(a_stab_cal.tolist(), TARGET_ENERGY)
-    res.h_heat_cal = ROOT.TH1F(
-        f"h_heat_cal_{tag}",
-        f"Ch {ch_id} P{idx}: Calibrated & Stabilized Thallium Peak;Energy (keV);Counts",
-        params_cal.bins, params_cal.vis_min, params_cal.vis_max)
-    res.h_heat_cal.SetDirectory(0)
-    if n_stab_fin > 0:
-        res.h_heat_cal.FillN(n_stab_fin, a_stab_cal.astype(np.double),
-                             np.ones(n_stab_fin, np.double))
-
-    fit_min_cal = params_cal.median - 5.0 * params_cal.robust_sigma
-    fit_max_cal = params_cal.median + 5.0 * params_cal.robust_sigma
-    res.fit_cal = ROOT.TF1(f"fit_cal_{tag}", "gaus", fit_min_cal, fit_max_cal)
-    res.fit_cal.SetParameters(res.h_heat_cal.GetMaximum(),
-                              params_cal.median, params_cal.robust_sigma)
-    res.h_heat_cal.Fit(res.fit_cal, "Q0 R L")
-
-    res.h_heat_cal_final = res.h_heat_cal.Clone(f"h_heat_cal_final_{tag}")
-    res.h_heat_cal_final.Reset()
-    mask_cal_win = (a_stab_cal >= fit_min_cal) & (a_stab_cal <= fit_max_cal)
-    n_cal_win    = int(mask_cal_win.sum())
-    if n_cal_win > 0:
-        res.h_heat_cal_final.FillN(n_cal_win, a_stab_cal[mask_cal_win].astype(np.double),
-                                   np.ones(n_cal_win, np.double))
-
-    if res.g_heat_vs_base_clean.GetN() > 3 and res.h_heat_cal.GetEntries() > 0:
-        res.gaussian_counts = (res.fit_cal.GetParameter(0) * res.fit_cal.GetParameter(2)
-                               * math.sqrt(2 * math.pi)
-                               / res.h_heat_cal.GetXaxis().GetBinWidth(1))
-    else:
-        res.gaussian_counts = float(res.n_clean)
+    apply_stabilization_line(res, ch_id)
 
     return res
 
@@ -2664,7 +2861,7 @@ def load_external_stab_line(folder, ch_id):
 def run_stabilization(
     filename,
     save_summary_jpeg=True, save_corr_jpeg=True, create_root_file=True,
-    show_canvas=False, manual_cuts=None, output_dir=None,
+    manual_cuts=None, output_dir=None,
     save_partition_jpeg=True
 ):
     """
@@ -2676,8 +2873,6 @@ def run_stabilization(
     save_summary_jpeg : write the 4x3 overview JPEG.
     save_corr_jpeg    : write the correlation-analysis JPEG.
     create_root_file  : write the stabilized copy with the new TTree.
-    show_canvas       : draw the canvases on screen (interactive mode); when
-                        True the drawn ROOT objects are kept alive.
     manual_cuts       : optional dict overriding the automatic cuts
                         (chosen_ld, ly_cut_min/max, heat_cut_min/max).
     output_dir        : base folder for the output sub-folders; defaults to the
@@ -2994,6 +3189,9 @@ def run_stabilization(
 
     print(f">>> Correlation interval lower bound (above heater): {corr_valid_min_eff:.6f}")
     print(f">>> Correlation Cut ({int(CORR_CUT_PERCENTILE*100)}th percentile): {corr_cut_dynamic:.6f}")
+    if manual_cuts and manual_cuts.get("corr_cut") is not None:
+        corr_cut_dynamic = float(manual_cuts["corr_cut"])
+        print(f">>> Correlation Cut OVERRIDDEN by hand: {corr_cut_dynamic:.6f}")
 
     # Scatter (decimated for display) and distribution of the correlation.
     g_corr_vs_heat = make_scatter_graph(ha_above, corr_above)
@@ -3080,6 +3278,29 @@ def run_stabilization(
     ha_main   = ha[mask_baseline]
     partition_intervals, partition_peaks, h_base_part = FindBaselinePartitions(
         base_main, ch_id, enabled=ENABLE_BASELINE_PARTITIONS)
+
+    # Boundaries set by hand REPLACE the ones found automatically: the search
+    # only separates blocks that are clearly detached, so a channel whose
+    # clusters touch can only be split by eye.
+    man_edges = [e for e in (manual_cuts or {}).get("edges", [])
+                 if base_main.size and base_main.min() < e < base_main.max()]
+    if man_edges:
+        lo_all, hi_all = float(base_main.min()), float(base_main.max())
+        bounds = [lo_all] + sorted(man_edges) + [hi_all]
+        partition_intervals = [(bounds[i], bounds[i + 1])
+                               for i in range(len(bounds) - 1)]
+        partition_peaks = []
+        if h_base_part is not None:
+            for blo, bhi in partition_intervals:
+                b1 = max(1, h_base_part.GetXaxis().FindBin(blo))
+                b2 = min(h_base_part.GetNbinsX(), h_base_part.GetXaxis().FindBin(bhi))
+                best = max(range(b1, b2 + 1),
+                           key=h_base_part.GetBinContent, default=b1)
+                partition_peaks.append(h_base_part.GetXaxis().GetBinCenter(best))
+        skipped = len((manual_cuts or {}).get("edges", [])) - len(man_edges)
+        print(f">>> Ch {ch_id}: {len(man_edges)} MANUAL baseline boundary(ies) "
+              f"({', '.join(f'{e:.4f}' for e in man_edges)})"
+              + (f"; {skipped} outside the data range, ignored." if skipped else "."))
 
     if not ENABLE_BASELINE_PARTITIONS:
         print(">>> Baseline partitioning DISABLED: single stabilization over the whole range.")
@@ -3244,8 +3465,7 @@ def run_stabilization(
         print(f">>> Combined-spectrum Tl peak hint at amplitude {hint_center:.1f} "
               f"(sigma {hint_sigma:.1f}); used for all partitions.")
 
-    part_results      = []
-    apply_heat_manual = (len(partition_intervals) == 1)
+    part_results = []
     for idx, (blo, bhi) in enumerate(partition_intervals):
         mask_part = mask_ly_pass & mask_stab_window & (part_of_event == idx)
         amps_p  = amp_for_analysis[mask_part]
@@ -3256,14 +3476,35 @@ def run_stabilization(
               f"{len(amps_p)} events for stabilization ({src})")
         res_p = process_partition(amps_p, bases_p, ch_id, idx, blo, bhi,
                                   manual_cuts=manual_cuts,
-                                  apply_heat_manual=apply_heat_manual,
                                   peak_hint=peak_hint, ext_line=ext_single)
         part_results.append(res_p)
 
     sufficient_events = any(r.sufficient for r in part_results)
 
-    # Fallback (q_0, slope) for partitions WITHOUT a line (no fit and no external
-    # line: slope == q_0 == 0): copy it from the nearest partition that has one.
+    # ---- the line each partition ends up with -----------------------------
+    # 1. line_from in the overrides file: use ANOTHER partition's line, whatever
+    #    this one fitted. For a partition too poor to give a trustworthy slope
+    #    but whose events are still worth stabilizing.
+    # 2. Fallback for partitions with NO line at all (no fit and no external
+    #    line: slope == q_0 == 0): the nearest partition that has one.
+    # Everything that depends on the line is then REBUILT (the stabilized peak,
+    # the scatter after the stabilization, the counts): the panels must show the
+    # line that was actually applied, not the one the partition first fitted.
+    part_over = (manual_cuts or {}).get("part", {})
+    for i, r in enumerate(part_results):
+        src = part_over.get(i, {}).get("line_from")
+        if src is None:
+            continue
+        j = int(src)
+        if j == i or not (0 <= j < len(part_results)):
+            print(f"  [!] Ch {ch_id} P{i}: line_from = {src} is not another "
+                  f"partition of this channel; ignored.", file=sys.stderr)
+            continue
+        r.slope, r.q_0 = part_results[j].slope, part_results[j].q_0
+        r.line_from = j
+        print(f"  -> Ch {ch_id} P{i}: line taken from P{j} "
+              f"(slope {r.slope:+.4g}, q0 {r.q_0:.4g}).")
+
     suff_idx = [i for i, r in enumerate(part_results)
                 if not (r.q_0 == 0.0 and r.slope == 0.0)]
     if suff_idx:
@@ -3271,6 +3512,25 @@ def run_stabilization(
             if r.q_0 == 0.0 and r.slope == 0.0:
                 j = min(suff_idx, key=lambda s: abs(s - i))
                 r.slope, r.q_0 = part_results[j].slope, part_results[j].q_0
+                r.line_from = j
+
+    for r in part_results:
+        if r.line_from is not None and r.sufficient and r.bin_params is not None:
+            apply_stabilization_line(r, ch_id)
+
+    # ---- partitions excluded from the combined results --------------------
+    # They are still analysed and drawn -- what was thrown away has to stay
+    # visible -- but their events are kept out of the chain spectra, of the
+    # merged before/after/nopart spectra and of both results tables.
+    for i, r in enumerate(part_results):
+        r.dropped = bool(part_over.get(i, {}).get("drop"))
+    dropped_idx = [r.idx for r in part_results if r.dropped]
+    if dropped_idx:
+        print(f">>> Ch {ch_id}: partition(s) {', '.join('P%d' % i for i in dropped_idx)} "
+              f"EXCLUDED from the combined results (still drawn).")
+    mask_kept = (~np.isin(part_of_event, dropped_idx)) if dropped_idx \
+                else np.ones(N, dtype=bool)
+    mask_chain = mask_ly_pass & mask_kept
 
     # ======================================================================
     # PER-PARTITION BEFORE/AFTER PEAK FITS  (all window events, gaus+pol0)
@@ -3280,6 +3540,8 @@ def run_stabilization(
     # background, on a shared before/after axis:
     #   BEFORE : window events RESCALED to energy on the partition's own Tl peak;
     #   AFTER  : window events STABILIZED per-event (already energy, NOT rescaled).
+    # Kept for the MERGED spectra fitted below.
+    sep_raw, sep_before, sep_after, sep_sig = [], [], [], []
     for r in part_results:
         if r.all_amps.size < 1:
             continue
@@ -3313,6 +3575,55 @@ def run_stabilization(
         if r.h_after is not None:
             r.h_after.SetTitle(
                 f"Ch {ch_id} P{r.idx}: Thallium AFTER stab.;Energy (keV);Counts")
+        if r.dropped:
+            continue                      # excluded from the combined results
+        if sig_hint:
+            sep_sig.append((sig_hint, max(int(r.all_amps.size), 1)))
+        sep_raw.append(r.all_amps)
+        sep_before.append(before_e)
+        if after_e is not None:
+            sep_after.append(after_e)
+
+    # MERGED spectra of the same events, on ONE shared axis:
+    #   nopart -> all the events rescaled on ONE global peak: no partitioning;
+    #   before -> every partition rescaled on its OWN peak, then merged. This is
+    #             what the partitioning ALONE gives, with no stabilization;
+    #   after  -> the stabilized events merged.
+    #   nopart -> before  = gain of splitting into partitions
+    #   before -> after   = gain of the stabilization itself
+    # Widths taken from the stabilization, never re-measured over a window where
+    # the continuum can win (see chain_peak_interval): sig_intra = population-
+    # weighted mean of the partitions' clean-peak sigma; sig_comb = that width and
+    # the spread BETWEEN partition positions in quadrature.
+    sig_intra = (sum(sv * n for sv, n in sep_sig) / sum(n for _, n in sep_sig)
+                 if sep_sig else None)
+    kept_results = [r for r in part_results if not r.dropped]
+    sig_comb = chain_peak_interval(kept_results)[2] * TARGET_ENERGY
+    if not (sig_comb > 0):
+        sig_comb = sig_intra
+
+    merged_ba = merged_nopart = None
+    if sep_before:
+        merged_ba = combined_before_after_fits(
+            np.concatenate(sep_before),
+            np.concatenate(sep_after) if sep_after else None,
+            TARGET_ENERGY, f"merged_{ch_id}", sig_hint=sig_intra)
+        if merged_ba[0] is not None:
+            merged_ba[0].SetTitle(
+                f"Ch {ch_id}: Thallium, partitions merged BEFORE stab.;Energy (keV);Counts")
+        if merged_ba[2] is not None:
+            merged_ba[2].SetTitle(
+                f"Ch {ch_id}: Thallium, partitions merged AFTER stab.;Energy (keV);Counts")
+        raw_all = np.concatenate(sep_raw)
+        mu_glob = hint_center if (peak_hint is not None and hint_center > 0) \
+                  else float(np.median(raw_all))
+        if mu_glob > 0:
+            merged_nopart = combined_before_after_fits(
+                TARGET_ENERGY * raw_all / mu_glob, None,
+                TARGET_ENERGY, f"nopart_{ch_id}", sig_hint=sig_comb)
+            if merged_nopart[0] is not None:
+                merged_nopart[0].SetTitle(
+                    f"Ch {ch_id}: Thallium, no partitioning;Energy (keV);Counts")
 
     # ======================================================================
     # AMPLITUDE-CHAIN COMPARISON  (combined-thallium canvas)
@@ -3366,7 +3677,7 @@ def run_stabilization(
     # Width expected for the thallium peak of this channel, from the partition
     # peaks the stabilization already measured: it bounds every panel's fit.
     cfg = chain_settings(ch_id)
-    tl_frac, tl_mu_main, tl_res = chain_peak_interval(part_results, cfg.peak_nsigma)
+    tl_frac, tl_mu_main, tl_res = chain_peak_interval(kept_results, cfg.peak_nsigma)
     tl_interval = (tl_frac, tl_res)
     # Conversion factor of the MAIN amplitude: the same rough -> amplitude factor
     # the global overview uses. Every variable's factor is expressed relative to
@@ -3385,7 +3696,7 @@ def run_stabilization(
         # exactly the range of the global-overview spectrum.
         k      = rough_to_units(values, cal_rough, mask_conv)
         lo, hi = CHAIN_DISP_MIN * k, CHAIN_DISP_MAX * k
-        sel    = values[mask_ly_pass]
+        sel    = values[mask_chain]
         sel    = sel[np.isfinite(sel)]
 
         h_full = ROOT.TH1F(f"h_chain_full_{ch_id}_{i}",
@@ -3442,16 +3753,23 @@ def run_stabilization(
         print("  [!] Warning: no event survived the cuts in any partition.")
 
     # --- Results table: the fitted resolutions of the chain, on file ---------
-    # Written on the FINAL run only: in the interactive GUI the canvases are
-    # rebuilt at every parameter change, and those previews must not end up in
-    # the results file (the accepted run goes through show_canvas=False).
-    if SAVE_RES_CSV and not show_canvas:
+    if SAVE_RES_CSV:
         res_rows = collect_resolution_rows(ch_id, chain)
         if res_rows:
             write_resolution_csv(
                 os.path.join(output_dir, RES_CSV_DIR_NAME,
                              f"{os.path.splitext(RES_CSV_NAME)[0]}{calib_suffix}.csv"),
                 ch_id, res_rows)
+
+    # --- Per-partition resolutions (before/after) + the merged spectra -------
+    if SAVE_PART_RES_CSV:
+        part_rows = collect_partition_resolution_rows(ch_id, part_results,
+                                                      merged_ba, merged_nopart)
+        if part_rows:
+            write_resolution_csv(
+                os.path.join(output_dir, RES_CSV_DIR_NAME,
+                             f"{os.path.splitext(PART_RES_CSV_NAME)[0]}{calib_suffix}.csv"),
+                ch_id, part_rows, PART_RES_CSV_FIELDS, _part_res_sort_key)
 
     # ======================================================================
     # WRITE STABILIZED .ROOT FILE  (per-partition linear stabilization)
@@ -3560,7 +3878,7 @@ def run_stabilization(
     # ------------------------------------------------------- GLOBAL OVERVIEW (A)
     # First two rows: correlation + spectra (row 1) and light yield (row 2).
     # These are global (one per file); they do NOT depend on the partition.
-    make_summary = show_canvas or save_summary_jpeg
+    make_summary = save_summary_jpeg
     if make_summary and save_summary_jpeg:
         os.makedirs(debug_ch_dir, exist_ok=True)
 
@@ -3614,13 +3932,29 @@ def run_stabilization(
                 if res1.fit_alpha: res1.fit_alpha.Draw("same")
                 c_glob.Update()
                 if res1.fit_Tl:
-                    ll1 = ROOT.TLine(res1.cut_min, 0, res1.cut_min, ROOT.gPad.GetUymax())
-                    lr1 = ROOT.TLine(res1.cut_max, 0, res1.cut_max, ROOT.gPad.GetUymax())
+                    # The window ACTUALLY APPLIED on the chosen detector, which is
+                    # the manual one when the overrides file has it: drawing the
+                    # automatic cuts there would show a selection that was not made.
+                    _lo, _hi = ((ly_cut_min_final, ly_cut_max_final) if chosen_ld == 1
+                                else (res1.cut_min, res1.cut_max))
+                    _man = (chosen_ld == 1
+                            and (_lo != res1.cut_min or _hi != res1.cut_max))
+                    ll1 = ROOT.TLine(_lo, 0, _lo, ROOT.gPad.GetUymax())
+                    lr1 = ROOT.TLine(_hi, 0, _hi, ROOT.gPad.GetUymax())
                     for l in (ll1, lr1):
-                        l.SetLineColor(ROOT.kBlue); l.SetLineWidth(2)
-                        l.SetLineStyle(2); l.Draw("same")
+                        l.SetLineColor(ROOT.kMagenta + 2 if _man else ROOT.kBlue)
+                        l.SetLineWidth(2)
+                        l.SetLineStyle(1 if _man else 2); l.Draw("same")
                     pt1 = CreateLYBox(res1, "LD1"); pt1.Draw()
                     global_lines.extend([ll1, lr1, pt1])
+                    _tag1 = ROOT.TPaveText(0.13, 0.86, 0.55, 0.93, "NDC")
+                    _tag1.SetFillColor(ROOT.kWhite); _tag1.SetBorderSize(1)
+                    _tag1.SetTextAlign(12); _tag1.SetTextFont(62); _tag1.SetTextSize(0.032)
+                    _t = _tag1.AddText("LD1 USATO" + (" - taglio MANUALE" if _man else "")
+                                     if chosen_ld == 1 else "LD1 non usato")
+                    _t.SetTextColor(ROOT.kMagenta + 2 if _man else
+                                    (ROOT.kBlack if chosen_ld == 1 else ROOT.kGray + 2))
+                    _tag1.Draw(); global_lines.append(_tag1)
 
             c_glob.cd(5); ROOT.gPad.SetGrid()
             if h_ly2.GetEntries() > 0:
@@ -3630,13 +3964,29 @@ def run_stabilization(
                 if res2.fit_alpha: res2.fit_alpha.Draw("same")
                 c_glob.Update()
                 if res2.fit_Tl:
-                    ll2 = ROOT.TLine(res2.cut_min, 0, res2.cut_min, ROOT.gPad.GetUymax())
-                    lr2 = ROOT.TLine(res2.cut_max, 0, res2.cut_max, ROOT.gPad.GetUymax())
+                    # The window ACTUALLY APPLIED on the chosen detector, which is
+                    # the manual one when the overrides file has it: drawing the
+                    # automatic cuts there would show a selection that was not made.
+                    _lo, _hi = ((ly_cut_min_final, ly_cut_max_final) if chosen_ld == 2
+                                else (res2.cut_min, res2.cut_max))
+                    _man = (chosen_ld == 2
+                            and (_lo != res2.cut_min or _hi != res2.cut_max))
+                    ll2 = ROOT.TLine(_lo, 0, _lo, ROOT.gPad.GetUymax())
+                    lr2 = ROOT.TLine(_hi, 0, _hi, ROOT.gPad.GetUymax())
                     for l in (ll2, lr2):
-                        l.SetLineColor(ROOT.kBlue); l.SetLineWidth(2)
-                        l.SetLineStyle(2); l.Draw("same")
+                        l.SetLineColor(ROOT.kMagenta + 2 if _man else ROOT.kBlue)
+                        l.SetLineWidth(2)
+                        l.SetLineStyle(1 if _man else 2); l.Draw("same")
                     pt2 = CreateLYBox(res2, "LD2"); pt2.Draw()
                     global_lines.extend([ll2, lr2, pt2])
+                    _tag2 = ROOT.TPaveText(0.13, 0.86, 0.55, 0.93, "NDC")
+                    _tag2.SetFillColor(ROOT.kWhite); _tag2.SetBorderSize(1)
+                    _tag2.SetTextAlign(12); _tag2.SetTextFont(62); _tag2.SetTextSize(0.032)
+                    _t = _tag2.AddText("LD2 USATO" + (" - taglio MANUALE" if _man else "")
+                                     if chosen_ld == 2 else "LD2 non usato")
+                    _t.SetTextColor(ROOT.kMagenta + 2 if _man else
+                                    (ROOT.kBlack if chosen_ld == 2 else ROOT.kGray + 2))
+                    _tag2.Draw(); global_lines.append(_tag2)
 
         c_glob.cd(6); ROOT.gPad.SetGrid()
         h2_full.Draw(); c_glob.Update()
@@ -3682,17 +4032,56 @@ def run_stabilization(
 
             # (0,0) pre-cleaning spectrum + preliminary fit
             c_parts.cd(padno(0, 0)); ROOT.gPad.SetGrid()
-            if r.sufficient and r.h_heat_orig is not None:
+            if r.h_heat_orig is not None:
                 r.h_heat_orig.SetLineColor(ROOT.kBlue); r.h_heat_orig.SetStats(0)
                 r.h_heat_orig.Draw()
                 if r.fit_prelim:
                     r.fit_prelim.SetLineColor(ROOT.kRed); r.fit_prelim.SetLineWidth(2)
                     r.fit_prelim.Draw("same")
+                # Cleaning window: the events BETWEEN these two lines are the ones
+                # the stabilization line is fitted on. Magenta and solid when it
+                # was set by hand (ManualOverrides.py), green and dashed when it
+                # is the automatic peak +/- HEAT_CLEAN_NSIGMA sigma.
+                c_parts.Update()
+                if r.heat_cut_max > r.heat_cut_min:
+                    _col = ROOT.kMagenta + 2 if r.heat_manual else ROOT.kGreen + 2
+                    for _x in (r.heat_cut_min, r.heat_cut_max):
+                        _l = ROOT.TLine(_x, 0, _x, ROOT.gPad.GetUymax())
+                        _l.SetLineColor(_col); _l.SetLineWidth(2)
+                        _l.SetLineStyle(1 if r.heat_manual else 2)
+                        _l.Draw("same"); global_lines.append(_l)
+                    _cw = ROOT.TPaveText(0.13, 0.80, 0.58, 0.88, "NDC")
+                    _cw.SetFillColor(ROOT.kWhite); _cw.SetBorderSize(1)
+                    _cw.SetTextAlign(12); _cw.SetTextFont(62); _cw.SetTextSize(0.033)
+                    _t = _cw.AddText(("finestra MANUALE" if r.heat_manual else "finestra automatica")
+                                     + f" [{r.heat_cut_min:.0f}, {r.heat_cut_max:.0f}]")
+                    _t.SetTextColor(_col)
+                    _cw.Draw(); global_lines.append(_cw)
+                if not r.sufficient:
+                    # No line of its own: the cleaning window kept fewer than
+                    # PART_MIN_CLEAN_EVENTS events (a preliminary fit that
+                    # collapsed on a poor partition), so it inherits a
+                    # neighbour's line and the panels that need the local fit
+                    # are empty. Saying it beats a silently blank block.
+                    _ns = ROOT.TPaveText(0.13, 0.56, 0.72, 0.66, "NDC")
+                    _ns.SetFillColor(ROOT.kWhite); _ns.SetBorderSize(2)
+                    _ns.SetTextAlign(12); _ns.SetTextFont(62); _ns.SetTextSize(0.033)
+                    _t = _ns.AddText(f"{r.n_clean} event{'o' if r.n_clean == 1 else 'i'} "
+                                     f"dopo la pulizia: nessuna retta propria")
+                    _t.SetTextColor(ROOT.kOrange + 8)
+                    _ns.Draw(); global_lines.append(_ns)
+                if r.dropped:
+                    _dp = ROOT.TPaveText(0.13, 0.68, 0.62, 0.78, "NDC")
+                    _dp.SetFillColor(ROOT.kWhite); _dp.SetBorderSize(2)
+                    _dp.SetTextAlign(12); _dp.SetTextFont(62); _dp.SetTextSize(0.038)
+                    _t = _dp.AddText("PARTIZIONE ESCLUSA dai risultati")
+                    _t.SetTextColor(ROOT.kRed + 1)
+                    _dp.Draw(); global_lines.append(_dp)
 
             # (0,1) thallium peak BEFORE stabilization (rescaled) + gaus+pol0 fit
             #       over ALL window events, on the shared before/after axis.
             c_parts.cd(padno(0, 1)); ROOT.gPad.SetGrid()
-            if r.sufficient and r.h_before is not None:
+            if r.h_before is not None:
                 r.h_before.SetStats(0); r.h_before.SetLineColor(ROOT.kBlack)
                 r.h_before.SetFillColorAlpha(ROOT.kGray, 0.5); r.h_before.Draw()
                 if r.fit_before:
@@ -3703,7 +4092,7 @@ def run_stabilization(
 
             # (0,2) amplitude vs baseline + linear fit (de-zoomed, with the line)
             c_parts.cd(padno(0, 2)); ROOT.gPad.SetGrid()
-            if r.sufficient and r.g_heat_vs_base_clean is not None:
+            if r.g_heat_vs_base_clean is not None:
                 gc = r.g_heat_vs_base_clean
                 gc.SetMarkerStyle(20); gc.SetMarkerSize(0.5); gc.SetMarkerColor(ROOT.kMagenta)
                 if r.view_clean is not None:
@@ -3724,6 +4113,13 @@ def run_stabilization(
                     tt = tnote.AddText("orange = excluded from the line")
                     tt.SetTextColor(ROOT.kOrange + 7)
                     tnote.Draw(); global_lines.append(tnote)
+                if r.line_from is not None:
+                    _lf = ROOT.TPaveText(0.14, 0.66, 0.62, 0.73, "NDC")
+                    _lf.SetFillColor(ROOT.kWhite); _lf.SetBorderSize(1)
+                    _lf.SetTextAlign(12); _lf.SetTextFont(62); _lf.SetTextSize(0.035)
+                    _t = _lf.AddText(f"retta APPLICATA presa da P{r.line_from}")
+                    _t.SetTextColor(ROOT.kMagenta + 2)
+                    _lf.Draw(); global_lines.append(_lf)
                 if r.f1:
                     lr = r.fit_brange if r.fit_brange is not None else (
                         r.view_clean[:2] if r.view_clean is not None else None)
@@ -3746,7 +4142,7 @@ def run_stabilization(
             # (1,0) thallium peak AFTER stabilization (stabilized, NOT rescaled) +
             #       gaus+pol0 fit over ALL window events, on the shared axis.
             c_parts.cd(padno(1, 0)); ROOT.gPad.SetGrid()
-            if r.sufficient and r.h_after is not None:
+            if r.h_after is not None:
                 r.h_after.SetStats(0); r.h_after.SetLineColor(ROOT.kBlack)
                 r.h_after.SetFillColorAlpha(ROOT.kRed + 1, 0.5); r.h_after.Draw()
                 if r.fit_after:
@@ -3758,7 +4154,7 @@ def run_stabilization(
 
             # (1,1) stabilized peak (amplitude) + fit + box
             c_parts.cd(padno(1, 1)); ROOT.gPad.SetGrid()
-            if r.sufficient and r.h_heat_stab is not None:
+            if r.h_heat_stab is not None and r.h_heat_stab.GetEntries() > 0:
                 r.h_heat_stab.SetStats(0); r.h_heat_stab.SetLineColor(ROOT.kGreen + 2)
                 r.h_heat_stab.Draw()
                 if r.fit_stab:
@@ -3769,7 +4165,7 @@ def run_stabilization(
 
             # (1,2) amplitude vs baseline AFTER stabilization (de-zoomed)
             c_parts.cd(padno(1, 2)); ROOT.gPad.SetGrid()
-            if r.sufficient and r.g_heat_vs_base_stab is not None:
+            if r.g_heat_vs_base_stab is not None:
                 gs = r.g_heat_vs_base_stab
                 gs.SetMarkerStyle(20); gs.SetMarkerSize(0.5); gs.SetMarkerColor(ROOT.kGreen + 2)
                 if r.view_stab is not None:
@@ -3829,7 +4225,7 @@ def run_stabilization(
         build_chain_canvas()
 
     # ----------------------------------------------------------- CORRELATION
-    make_corr = show_canvas or save_corr_jpeg
+    make_corr = save_corr_jpeg
     if make_corr:
         c_corr = ROOT.TCanvas(f"c_corr_{ch_id}", f"Correlation Analysis Ch {ch_id}", 1800, 600)
         c_corr.Divide(3, 1)
@@ -3914,7 +4310,7 @@ def run_stabilization(
         canvases.append(c_corr)
 
     # ---------------------------------------------------- BASELINE PARTITIONS
-    make_part = show_canvas or save_partition_jpeg
+    make_part = save_partition_jpeg
     if make_part:
         n_part_pads = 3 if g_base_time is not None else 2
         c_part = ROOT.TCanvas(f"c_part_{ch_id}",
@@ -3990,38 +4386,6 @@ def run_stabilization(
             save_canvas_jpeg(c_part, out_jpg)
         canvases.append(c_part)
 
-    # --- MEMORY PROTECTION: only when canvases are shown interactively ------
-    # In batch (JPEG only) there is no need to keep them alive: the SaveAs is
-    # already done. In interactive mode, instead, EVERY drawn object (hists,
-    # graphs, fits, lines, boxes) must stay referenced; otherwise the Python
-    # garbage collector frees them and the histograms vanish at the first
-    # window repaint (e.g. a click).
-    if show_canvas:
-        global GLOBAL_KEEPALIVE
-        GLOBAL_KEEPALIVE.extend(canvases)
-        GLOBAL_KEEPALIVE.extend(global_lines)
-
-        keep = [h_cal_rough, h_raw, h_corr, g_corr_vs_heat, h2_full,
-                g_phys_disp, g_heater_disp, h_corr_heater, fit_corr_heater,
-                g_base_part, g_base_time, h_base_part]
-        for p in chain:
-            keep.extend([p["h_full"], p["h_zoom"], p["fit_zoom"],
-                         p["h_energy"], p["fit_energy"]])
-        if apply_ly_cut:
-            keep.extend([h_ly1, h_ly2, g_ly1_vs_heat, g_ly2_vs_heat,
-                         res1.fit_Tl, res1.fit_alpha, res2.fit_Tl, res2.fit_alpha])
-        for r in part_results:
-            keep.extend([r.h_heat_orig, r.fit_prelim, r.h_heat_clean, r.fit_clean,
-                         r.g_heat_vs_base_clean, r.g_heat_vs_base_trim, r.f1, r.f1_ext,
-                         r.h_heat_stab, r.fit_stab,
-                         r.g_heat_vs_base_stab, r.h_heat_cal, r.h_heat_cal_final,
-                         r.fit_cal, r.h_before, r.fit_before, r.h_after, r.fit_after])
-        GLOBAL_KEEPALIVE.extend([o for o in keep if o is not None])
-
-        for canvas in canvases:
-            ROOT.SetOwnership(canvas, False)
-            canvas.Modified(); canvas.Update()
-
     file.Close()
     return gaussian_counts
 
@@ -4049,8 +4413,8 @@ if __name__ == "__main__":
     else:
         target_channels = {str(c) for c in CHANNELS_TO_PROCESS}
 
-    # GUI is active only when the flag is on AND exactly one channel is selected.
-    gui_active = GUI_MANUAL_CUTS and len(target_channels) == 1
+    # Hand-tuned cuts of THIS dataset (written by ManualOverrides.py).
+    overrides = load_manual_overrides() if USE_MANUAL_OVERRIDES else {}
 
     # Folder to scan (depends on ANALYSIS_MODE).
     scan_dir = resolve_scan_dir()
@@ -4064,26 +4428,10 @@ if __name__ == "__main__":
         print(f"[!] Error: folder not found: {scan_dir}")
         sys.exit(1)
 
-    # --- Run-mode banner --------------------------------------------------------
     if not target_channels:
-        print(">>> Channel selection: ALL files in folder (batch mode).")
+        print(">>> Channel selection: ALL files in folder.")
     else:
-        print(f">>> Channel selection: {', '.join(sorted(target_channels, key=int))}  "
-              f"({'GUI' if gui_active else 'batch'} mode).")
-
-    # Batch mode (off-screen rendering): ON except when the GUI is active.
-    ROOT.gROOT.SetBatch(not gui_active)
-
-    if gui_active:
-        # Warm up tkinter BEFORE any TCanvas (needed on macOS: Tk registers the
-        # NSApplication first, which ROOT then reuses without a Cocoa clash).
-        try:
-            _tk_warmup = tk.Tk()
-            _tk_warmup.withdraw()
-            _tk_warmup.update()
-            _tk_warmup.destroy()
-        except tk.TclError:
-            pass
+        print(f">>> Channel selection: {', '.join(sorted(target_channels, key=int))}")
 
     # Collect the valid .root files (skip already-stabilized outputs).
     root_files = sorted(f for f in os.listdir(scan_dir)
@@ -4108,72 +4456,15 @@ if __name__ == "__main__":
         print(f"\n>>> File: {fname}  (channel {ch_id})")
 
         try:
-            if gui_active:
-                # --------------------------------------------------------------
-                # INTERACTIVE GUI MODE  (only reachable with a single channel)
-                # Loop: show the canvases on screen, let the user tweak the
-                # manual cuts and choose recalc / accept (save JPEG + ROOT) / quit.
-                # --------------------------------------------------------------
-                manual_cuts_dict = {}
-                counts = -1.0
-                while True:
-                    counts = run_stabilization(
-                        filename=full_path,
-                        save_summary_jpeg=False, save_corr_jpeg=False,
-                        create_root_file=False,
-                        show_canvas=True,
-                        manual_cuts=manual_cuts_dict if manual_cuts_dict else None,
-                        output_dir=scan_dir,
-                        save_partition_jpeg=False,
-                    )
-
-                    param_editor = ParamEditorApp(ch_id, manual_cuts_dict)
-                    action, manual_cuts_dict = param_editor.run()
-
-                    if action == 'quit':
-                        print("\n[!] Exiting the script...")
-                        sys.exit(0)
-
-                    elif action == 'recalc':
-                        for obj in GLOBAL_KEEPALIVE:
-                            if isinstance(obj, ROOT.TCanvas): obj.Close()
-                        GLOBAL_KEEPALIVE.clear()
-                        print("\n>>> Recomputing with the new parameters...\n")
-                        continue
-
-                    elif action == 'accept':
-                        # Close the current interactive canvases.
-                        for obj in GLOBAL_KEEPALIVE:
-                            if isinstance(obj, ROOT.TCanvas): obj.Close()
-                        GLOBAL_KEEPALIVE.clear()
-                        print("\n>>> Parameters accepted! Saving JPEG and stabilized ROOT...")
-                        # Temporary batch: writing the JPEGs must not pop windows.
-                        ROOT.gROOT.SetBatch(True)
-                        counts = run_stabilization(
-                            filename=full_path,
-                            save_summary_jpeg=SAVE_SUMMARY_JPEG,
-                            save_corr_jpeg=SAVE_CORR_JPEG,
-                            create_root_file=CREATE_ROOT_FILE,
-                            show_canvas=False,
-                            manual_cuts=manual_cuts_dict if manual_cuts_dict else None,
-                            output_dir=scan_dir,
-                            save_partition_jpeg=SAVE_PARTITION_JPEG,
-                        )
-                        ROOT.gROOT.SetBatch(False)
-                        break
-            else:
-                # --------------------------------------------------------------
-                # BATCH MODE  (whole folder, empty list, or more than one channel)
-                # --------------------------------------------------------------
-                counts = run_stabilization(
-                    filename=full_path,
-                    save_summary_jpeg=SAVE_SUMMARY_JPEG,
-                    save_corr_jpeg=SAVE_CORR_JPEG,
-                    create_root_file=CREATE_ROOT_FILE,
-                    show_canvas=False,
-                    output_dir=scan_dir,
-                    save_partition_jpeg=SAVE_PARTITION_JPEG,
-                )
+            counts = run_stabilization(
+                filename=full_path,
+                save_summary_jpeg=SAVE_SUMMARY_JPEG,
+                save_corr_jpeg=SAVE_CORR_JPEG,
+                create_root_file=CREATE_ROOT_FILE,
+                manual_cuts=overrides.get(ch_id),
+                output_dir=scan_dir,
+                save_partition_jpeg=SAVE_PARTITION_JPEG,
+            )
         except SystemExit:
             raise
         except Exception as e:

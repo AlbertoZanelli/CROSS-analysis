@@ -374,6 +374,13 @@ TL_RES_CSV_NAME   = "alpha_thallium_resolutions.csv"
 # tables above, so the same plotting program reads it.
 SAVE_ALPHA_RES_CSV = True
 ALPHA_RES_CSV_NAME = "alpha_resolutions.csv"
+# Per-PARTITION resolution of the alpha line, BEFORE (partition rescaled on its
+# own doublet) and AFTER the stabilization, plus the same two spectra with all
+# partitions MERGED. With the combined table (which rescales on ONE global peak,
+# i.e. no partitioning at all) this separates the gain of the partitioning from
+# the gain of the stabilization itself.
+SAVE_ALPHA_PART_RES_CSV = True
+ALPHA_PART_RES_CSV_NAME = "alpha_partition_resolutions.csv"
 
 # --- Correlation cut --------------------------------------------------------
 # The percentile is taken over the correlations ABOVE the heater cluster, not
@@ -2068,7 +2075,7 @@ def _tl_res_sort_key(r):
     return (ch, step, 0 if str(r.get("row", "")) == "native" else 1)
 
 
-def write_tl_resolution_csv(path, ch_id, new_rows):
+def write_tl_resolution_csv(path, ch_id, new_rows, fields=None, sort_key=None):
     """
     Write this channel's fit results to the results CSV at *path*.
 
@@ -2085,17 +2092,90 @@ def write_tl_resolution_csv(path, ch_id, new_rows):
         except OSError as e:
             print(f"  [!] Cannot read {path}: {e}", file=sys.stderr)
 
-    rows = sorted(old + list(new_rows), key=_tl_res_sort_key)
+    rows = sorted(old + list(new_rows), key=sort_key or _tl_res_sort_key)
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=TL_RES_CSV_FIELDS,
+            w = csv.DictWriter(fh, fieldnames=fields or TL_RES_CSV_FIELDS,
                                restval="nan", extrasaction="ignore")
             w.writeheader(); w.writerows(rows)
-        print(f">>> {len(new_rows)} Tl fit result(s) of ch {ch_id} written to "
+        print(f">>> {len(new_rows)} fit result(s) of ch {ch_id} written to "
               f"{os.path.basename(path)} ({len(rows)} row(s) in total).")
     except OSError as e:
         print(f"  [!] Cannot write {path}: {e}", file=sys.stderr)
+
+
+ALPHA_PART_RES_CSV_FIELDS = [
+    "channel", "partition", "phase", "n_events", "baseline_lo", "baseline_hi",
+    "peak", "mu", "mu_err", "sigma", "sigma_err", "fwhm", "fwhm_err",
+    "resolution_pct", "resolution_err_pct", "chi2", "ndf", "prob", "date",
+]
+
+
+def _part_res_sort_key(r):
+    """Order of the per-partition table: channel, partition (merged last), phase."""
+    def _int(v, default):
+        try:
+            return int(str(v).strip())
+        except (TypeError, ValueError):
+            return default
+    return (_int(r.get("channel"), 1 << 30),
+            _int(str(r.get("partition", "")).lstrip("P"), 1 << 30),
+            {"nopart": 0, "before": 1}.get(str(r.get("phase", "")), 2))
+
+
+def collect_alpha_partition_rows(ch_id, part_results, merged=None, nopart=None):
+    """
+    One row per (partition, phase) of the alpha line:
+
+      before : the partition's window events rescaled on the partition's OWN
+               doublet -- what the partitioning ALONE gives, no stabilization;
+      after  : the same events stabilized on the baseline.
+
+    *merged* is (doublet_before, doublet_after) of the SAME two spectra with all
+    partitions merged, written as partition "merged". *nopart* is the combined
+    doublet of alpha_resolutions.csv -- the same events rescaled on ONE global
+    peak, i.e. no partitioning at all -- written as phase "nopart". Same fitter
+    for the three, so the total gain splits in two:
+
+        nopart -> before   gain of the PARTITIONING alone
+        before -> after    gain of the STABILIZATION
+    """
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def num(v, fmt="{:.6g}"):
+        return fmt.format(v) if (v is not None and math.isfinite(v)) else "nan"
+
+    rows = []
+
+    def add(tag, phase, d, n_ev, blo, bhi):
+        m = doublet_metrics(d)
+        if m is None:
+            return
+        rows.append({
+            "channel": ch_id, "partition": tag, "phase": phase,
+            "n_events": int(n_ev), "baseline_lo": num(blo), "baseline_hi": num(bhi),
+            "peak": m["name"],
+            "mu": num(m["mu"]),       "mu_err": num(m["mu_err"]),
+            "sigma": num(m["sigma"]), "sigma_err": num(m["sigma_err"]),
+            "fwhm": num(m["fwhm"]),   "fwhm_err": num(m["fwhm_err"]),
+            "resolution_pct": num(m["res"], "{:.4f}"),
+            "resolution_err_pct": num(m["res_err"], "{:.4f}"),
+            "chi2": num(m["chi2"], "{:.3f}"), "ndf": m["ndf"],
+            "prob": num(m["prob"], "{:.4f}"),
+            "date": stamp,
+        })
+
+    for r in part_results:
+        add(f"P{r.idx}", "before", r.doublet_before, r.all_amps.size, r.blo, r.bhi)
+        add(f"P{r.idx}", "after",  r.doublet_after,  r.all_amps.size, r.blo, r.bhi)
+    n_tot = sum(int(r.all_amps.size) for r in part_results)
+    if nopart is not None:
+        add("merged", "nopart", nopart, n_tot, float("nan"), float("nan"))
+    if merged:
+        add("merged", "before", merged[0], n_tot, float("nan"), float("nan"))
+        add("merged", "after",  merged[1], n_tot, float("nan"), float("nan"))
+    return rows
 
 
 def write_alpha_resolution_csv(path, ch_id, doublet_before, doublet_after):
@@ -4048,6 +4128,8 @@ def run_stabilization(
     # partition's own alpha mean) and AFTER (per-event stabilized), so the
     # per-partition figure shows BOTH peaks with the same double-Gaussian fit and
     # FWHM as the combined image.
+    # Kept for the MERGED separation-only spectrum fitted below.
+    sep_before = []
     for r in part_results:
         if r.all_amps.size < 1:
             continue
@@ -4073,6 +4155,7 @@ def run_stabilization(
                                                     expect=(ALPHA_PARTICLE_ENERGY, TARGET_ENERGY))
                 r.doublet_after.hist.SetTitle(
                     f"Ch {ch_id} P{r.idx}: Alpha doublet AFTER stab.;Energy (keV);Counts")
+        sep_before.append(before_e)
 
     # ======================================================================
     # COMBINED DOUBLET SPECTRA  (all partitions merged) -- alpha + recoil peaks
@@ -4127,6 +4210,30 @@ def run_stabilization(
         write_alpha_resolution_csv(
             os.path.join(output_dir, STAB_ROOT_DIR_NAME, ALPHA_RES_CSV_NAME),
             ch_id, doublet_before, doublet_after)
+
+    # --- Per-partition resolutions + the merged separation-only spectrum -----
+    # SEPARATION-ONLY: every partition rescaled on its OWN doublet, then merged.
+    # No stabilization at all, so the comparison chain is
+    #   doublet_before (one global rescale)  ->  gain of the partitioning
+    #   sep_merged                           ->  gain of the stabilization
+    #   doublet_after  (merged, stabilized)
+    sep_merged = None
+    if sep_before:
+        all_sep = np.concatenate(sep_before)
+        _, s_lo, s_hi = calcRobustLimitsAndBins(all_sep.tolist())
+        sep_merged = fit_alpha_doublet(all_sep, s_lo, s_hi, f"sepmerge_{ch_id}",
+                                       expect=(ALPHA_PARTICLE_ENERGY, TARGET_ENERGY))
+        if sep_merged.hist is not None:
+            sep_merged.hist.SetTitle(
+                f"Ch {ch_id}: Alpha doublet, partitions merged BEFORE stab.;Energy (keV);Counts")
+    if SAVE_ALPHA_PART_RES_CSV:
+        part_rows = collect_alpha_partition_rows(ch_id, part_results,
+                                                 (sep_merged, doublet_after),
+                                                 doublet_before)
+        if part_rows:
+            write_tl_resolution_csv(
+                os.path.join(output_dir, STAB_ROOT_DIR_NAME, ALPHA_PART_RES_CSV_NAME),
+                ch_id, part_rows, ALPHA_PART_RES_CSV_FIELDS, _part_res_sort_key)
 
     # Counts under the (stabilized) alpha peak, from its Gaussian component.
     if doublet_after is not None and doublet_after.fit is not None:

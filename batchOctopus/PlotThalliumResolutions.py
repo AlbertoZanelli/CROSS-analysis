@@ -137,6 +137,26 @@ COMPARISONS = (
 )
 Z_BEFORE = "corrected"
 
+# The same significance figure, drawn from the PER-PARTITION tables
+# (thallium_partition_resolutions.csv / alpha_partition_resolutions.csv). Those
+# carry three "merged" spectra of the SAME events fitted with the SAME recipe:
+#   nopart : all the events on one global peak -- no partitioning at all
+#   before : each partition rescaled on its own peak, then merged
+#   after  : the same events stabilized, merged
+# so two comparisons share one "after" and answer the question the plain
+# significance figure cannot: how much of the improvement is the stabilization,
+# and how much is just having analysed the partitions apart.
+PART_COMPARISONS = (
+    ("part_in",    ("part_before",), "in-partition", "o"),
+    ("part_total", ("part_nopart",), "total",        "v"),
+)
+STEP_LABEL.update({
+    "part_before": "merged, not stabilized",
+    "part_nopart": "no partitioning",
+    "part_in":     "merged, stabilized",
+    "part_total":  "merged, stabilized",
+})
+
 
 # ===========================================================================
 # DATA
@@ -211,6 +231,45 @@ def read_rows(path, row_kind, background, strict=True):
             return {}, []
         sys.exit(f"[!] No row with row='{row_kind}' and background='{background}' "
                  f"in {path}")
+    return data, sorted(channels)
+
+
+def read_partition_rows(path, strict=True):
+    """
+    The three "merged" rows of a per-partition table, in the shape read_rows
+    returns: {key: {channel: {res, err, ndf}}} keyed as PART_COMPARISONS wants.
+    The stabilized spectrum is the "after" of BOTH comparisons, so it is stored
+    under both keys. The per-partition rows (P0, P1, ...) are deliberately NOT
+    read: they have no axis or ndf comparable between channels. Read them off the
+    CSV when a single partition looks suspect.
+    """
+    if not os.path.exists(path):
+        if not strict:
+            return {}, []
+        sys.exit(f"[!] Per-partition table not found: {path}")
+
+    keys_of = {"nopart": ("part_nopart",), "before": ("part_before",),
+               "after":  ("part_in", "part_total")}
+    data, channels = {}, set()
+    with open(path, newline="") as fh:
+        for r in csv.DictReader(fh):
+            if str(r.get("partition", "")).strip() != "merged":
+                continue
+            keys = keys_of.get(str(r.get("phase", "")).strip(), ())
+            if not keys:
+                continue
+            try:
+                ch = int(str(r.get("channel", "")).strip())
+            except (TypeError, ValueError):
+                continue
+            res = to_float(r.get("resolution_pct"))
+            if not math.isfinite(res):
+                continue
+            rec = dict(res=res, err=to_float(r.get("resolution_err_pct")),
+                       ndf=to_float(r.get("ndf")))
+            for k in keys:
+                data.setdefault(k, {})[ch] = rec
+            channels.add(ch)
     return data, sorted(channels)
 
 
@@ -478,16 +537,18 @@ def make_resolution_figure(data, channels, args):
 # FIGURE 2 -- SIGNIFICANCE OF THE THALLIUM STABILIZATION
 # ===========================================================================
 
-def make_significance_figure(data, channels, args, results):
+def make_significance_figure(data, channels, args, results,
+                            comparisons=COMPARISONS, title=None):
     """
     z of every channel and every comparison, with the Student-t "not
-    significant" band. *results* is the dict compute_significance returns.
+    significant" band. *results* is the dict compute_significance returns for
+    *comparisons*; *title* replaces the default headline.
     """
     n_ch = len(channels)
     fig, ax = new_axes(n_ch, height=5.2 if n_ch <= 24 else 5.8)
 
     # Only the comparisons the data has, in the order of COMPARISONS.
-    comps = [c for c in COMPARISONS if results.get(c[0])]
+    comps = [c for c in comparisons if results.get(c[0])]
     good  = {c[0]: [(i, z, nu, p, bk)
                     for i, (ch, z, nu, p, bk) in enumerate(results[c[0]])
                     if math.isfinite(z)]
@@ -559,8 +620,9 @@ def make_significance_figure(data, channels, args, results):
             fontweight="bold", bbox=_bbox, zorder=7)
 
     names = " and ".join(c[2] for c in comps)
-    ax.set_title(f"Statistical significance of the resolution change produced by "
-                 f"the {names} stabilization" + ("s" if len(comps) > 1 else ""),
+    ax.set_title(title or
+                 (f"Statistical significance of the resolution change produced by "
+                  f"the {names} stabilization" + ("s" if len(comps) > 1 else "")),
                  fontsize=13.5, fontweight="bold", pad=54)
     nus = [nu for c in comps for _, _, nu, _, _ in good[c[0]] if math.isfinite(nu)]
     nu_note = f"$\\nu\\approx${np.median(nus):.0f}" if nus else "Gaussian limit"
@@ -590,7 +652,8 @@ def make_significance_figure(data, channels, args, results):
         for after_key, _, name, marker in comps:
             handles.append(Line2D([], [], color="#444444", marker=marker, ms=9,
                                   mfc="#444444", mec="white", mew=0.8, ls="none",
-                                  label=f"{name} stabilization"))
+                                  label=(f"{name} gain" if title else
+                                         f"{name} stabilization")))
     for bk in sorted(fallback):
         handles.append(Line2D([], [], color="#555555", marker="o", ms=9,
                               mfc="white", mec="#555555", mew=2.0, ls="none",
@@ -608,14 +671,14 @@ def make_significance_figure(data, channels, args, results):
     return fig
 
 
-def compute_significance(data, channels):
+def compute_significance(data, channels, comparisons=COMPARISONS):
     """
     {after_key: [(channel, z, nu, p, before_key)]} for every comparison of
-    COMPARISONS the data actually contains, in the order given. *before_key* is
+    *comparisons* the data actually contains, in the order given. *before_key* is
     the step each channel was compared against.
     """
     out = {}
-    for after_key, before_keys, _, _ in COMPARISONS:
+    for after_key, before_keys, _, _ in comparisons:
         after = data.get(after_key)
         if not after:
             continue
@@ -656,11 +719,16 @@ def print_tables(data, channels, args, results):
                 cells.append(f"{rec['res']:7.3f} +/-   n/a")
         print(f"{ch:>5} | " + " | ".join(f"{c:^18}" for c in cells))
 
-    for after_key, before_keys, name, _ in COMPARISONS:
+    print_significance_table(results, args, COMPARISONS)
+
+
+def print_significance_table(results, args, comparisons=COMPARISONS, what="stabilization"):
+    """The z / nu / p table of every comparison, with the verdict."""
+    for after_key, before_keys, name, _ in comparisons:
         rows = results.get(after_key)
         if not rows:
             continue
-        print(f"\nSignificance of the {name} stabilization "
+        print(f"\nSignificance of the {name} {what} "
               f"(-> {STEP_LABEL[after_key]})")
         print(f"{'ch':>5} | {'before':^16} | {'z':>7} | {'nu_eff':>7} | "
               f"{'p (2-sided)':>12} | verdict")
@@ -721,6 +789,15 @@ def main():
     ap.add_argument("--no-significance", dest="significance",
                     action="store_false",
                     help="only draw the resolution figure")
+    ap.add_argument("--partition-csv", dest="part_csv", default=None,
+                    help="per-partition table of the thallium line (default: "
+                         "thallium_partition_resolutions.csv next to --csv)")
+    ap.add_argument("--alpha-partition-csv", dest="alpha_part_csv", default=None,
+                    help="per-partition table of the alpha line (default: "
+                         "alpha_partition_resolutions.csv in "
+                         "../AlphaStabilizedAmp)")
+    ap.add_argument("--no-partitions", dest="partitions", action="store_false",
+                    help="skip the two in-partition/total significance figures")
     ap.add_argument("--out", default=None,
                     help="base name of the output files (default: next to the "
                          "CSV, one base per figure)")
@@ -767,6 +844,37 @@ def main():
         save(make_significance_figure(data, channels, args, results),
              (base + "_significance") if base else
              os.path.join(out_dir, f"thallium_significance_{tag}"))
+
+    # Same figure, from the per-partition tables: the in-partition gain and the
+    # total gain side by side, so it is visible whether the improvement is the
+    # stabilization or just the separate analysis of the partitions.
+    if args.partitions:
+        keep = set(args.channels or []) or None
+        drop = set(EXCLUDE_CHANNELS)
+        part_tables = (
+            ("208-Tl line", args.part_csv or os.path.join(
+                out_dir, "thallium_partition_resolutions.csv"), "thallium"),
+            ("210-Po alpha line", args.alpha_part_csv or os.path.normpath(
+                os.path.join(out_dir, "..", "AlphaStabilizedAmp",
+                             "alpha_partition_resolutions.csv")), "alpha"),
+        )
+        for label, path, name in part_tables:
+            p_data, p_channels = read_partition_rows(path, strict=False)
+            p_channels = [c for c in p_channels
+                          if c not in drop and (keep is None or c in keep)]
+            if not p_data or not p_channels:
+                print(f">>> No per-partition table for the {label} "
+                      f"({os.path.basename(path)}): figure skipped -- run "
+                      f"the stabilization program to write it.")
+                continue
+            p_res = compute_significance(p_data, p_channels, PART_COMPARISONS)
+            print_significance_table(p_res, args, PART_COMPARISONS, what="gain")
+            save(make_significance_figure(
+                     None, p_channels, args, p_res, PART_COMPARISONS,
+                     title=f"{label}: in-partition gain vs total gain"),
+                 (base + f"_{name}_partition_significance") if base else
+                 os.path.join(os.path.dirname(os.path.abspath(path)),
+                              f"{name}_partition_significance"))
 
 
 if __name__ == "__main__":

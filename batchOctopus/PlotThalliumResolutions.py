@@ -100,6 +100,7 @@ STEPS = [
     ("rough",      "Optimum filter amplitude",           "#1A5FA8", "o"),
     ("heater",     "After first heater stabilization",   "#12855F", "s"),
     ("corrected",  "After second heater stabilization",  "#D9720B", "^"),
+    ("merged_before", "Partitions merged, not stabilized", "#D9720B", "P"),
     ("stabilized", "After thallium stabilization",       "#C1272D", "D"),
     # Written by AlphaStabilization.py, not by the thallium program: its table
     # has the same columns, so the same figures can be drawn from it by passing
@@ -137,25 +138,17 @@ COMPARISONS = (
 )
 Z_BEFORE = "corrected"
 
-# The same significance figure, drawn from the PER-PARTITION tables
-# (thallium_partition_resolutions.csv / alpha_partition_resolutions.csv). Those
-# carry three "merged" spectra of the SAME events fitted with the SAME recipe:
-#   nopart : all the events on one global peak -- no partitioning at all
-#   before : each partition rescaled on its own peak, then merged
-#   after  : the same events stabilized, merged
-# so two comparisons share one "after" and answer the question the plain
-# significance figure cannot: how much of the improvement is the stabilization,
-# and how much is just having analysed the partitions apart.
-PART_COMPARISONS = (
-    ("part_in",    ("part_before",), "in-partition", "o"),
-    ("part_total", ("part_nopart",), "total",        "v"),
+# Third figure: what each stabilization is worth ON ITS OWN. Both comparisons
+# start from the SAME "before" -- the merged_before column, i.e. the same events
+# with each partition rescaled on its own peak and merged, so the partitioning is
+# already done on both sides and only the stabilization is left to explain the
+# difference. The usual 'corrected -> stabilized' comparison cannot claim that:
+# there the partitioning changes too. One circle and one triangle per channel,
+# exactly like the second figure.
+GAIN_COMPARISONS = (
+    ("stabilized", ("merged_before",), "thallium", "o"),
+    ("alpha",      ("merged_before",), "alpha",    "v"),
 )
-STEP_LABEL.update({
-    "part_before": "merged, not stabilized",
-    "part_nopart": "no partitioning",
-    "part_in":     "merged, stabilized",
-    "part_total":  "merged, stabilized",
-})
 
 
 # ===========================================================================
@@ -231,45 +224,6 @@ def read_rows(path, row_kind, background, strict=True):
             return {}, []
         sys.exit(f"[!] No row with row='{row_kind}' and background='{background}' "
                  f"in {path}")
-    return data, sorted(channels)
-
-
-def read_partition_rows(path, strict=True):
-    """
-    The three "merged" rows of a per-partition table, in the shape read_rows
-    returns: {key: {channel: {res, err, ndf}}} keyed as PART_COMPARISONS wants.
-    The stabilized spectrum is the "after" of BOTH comparisons, so it is stored
-    under both keys. The per-partition rows (P0, P1, ...) are deliberately NOT
-    read: they have no axis or ndf comparable between channels. Read them off the
-    CSV when a single partition looks suspect.
-    """
-    if not os.path.exists(path):
-        if not strict:
-            return {}, []
-        sys.exit(f"[!] Per-partition table not found: {path}")
-
-    keys_of = {"nopart": ("part_nopart",), "before": ("part_before",),
-               "after":  ("part_in", "part_total")}
-    data, channels = {}, set()
-    with open(path, newline="") as fh:
-        for r in csv.DictReader(fh):
-            if str(r.get("partition", "")).strip() != "merged":
-                continue
-            keys = keys_of.get(str(r.get("phase", "")).strip(), ())
-            if not keys:
-                continue
-            try:
-                ch = int(str(r.get("channel", "")).strip())
-            except (TypeError, ValueError):
-                continue
-            res = to_float(r.get("resolution_pct"))
-            if not math.isfinite(res):
-                continue
-            rec = dict(res=res, err=to_float(r.get("resolution_err_pct")),
-                       ndf=to_float(r.get("ndf")))
-            for k in keys:
-                data.setdefault(k, {})[ch] = rec
-            channels.add(ch)
     return data, sorted(channels)
 
 
@@ -789,15 +743,8 @@ def main():
     ap.add_argument("--no-significance", dest="significance",
                     action="store_false",
                     help="only draw the resolution figure")
-    ap.add_argument("--partition-csv", dest="part_csv", default=None,
-                    help="per-partition table of the thallium line (default: "
-                         "thallium_partition_resolutions.csv next to --csv)")
-    ap.add_argument("--alpha-partition-csv", dest="alpha_part_csv", default=None,
-                    help="per-partition table of the alpha line (default: "
-                         "alpha_partition_resolutions.csv in "
-                         "../AlphaStabilizedAmp)")
-    ap.add_argument("--no-partitions", dest="partitions", action="store_false",
-                    help="skip the two in-partition/total significance figures")
+    ap.add_argument("--no-gain", dest="gain", action="store_false",
+                    help="skip the stabilization-gain significance figure")
     ap.add_argument("--out", default=None,
                     help="base name of the output files (default: next to the "
                          "CSV, one base per figure)")
@@ -845,36 +792,22 @@ def main():
              (base + "_significance") if base else
              os.path.join(out_dir, f"thallium_significance_{tag}"))
 
-    # Same figure, from the per-partition tables: the in-partition gain and the
-    # total gain side by side, so it is visible whether the improvement is the
-    # stabilization or just the separate analysis of the partitions.
-    if args.partitions:
-        keep = set(args.channels or []) or None
-        drop = set(EXCLUDE_CHANNELS)
-        part_tables = (
-            ("208-Tl line", args.part_csv or os.path.join(
-                out_dir, "thallium_partition_resolutions.csv"), "thallium"),
-            ("210-Po alpha line", args.alpha_part_csv or os.path.normpath(
-                os.path.join(out_dir, "..", "AlphaStabilizedAmp",
-                             "alpha_partition_resolutions.csv")), "alpha"),
-        )
-        for label, path, name in part_tables:
-            p_data, p_channels = read_partition_rows(path, strict=False)
-            p_channels = [c for c in p_channels
-                          if c not in drop and (keep is None or c in keep)]
-            if not p_data or not p_channels:
-                print(f">>> No per-partition table for the {label} "
-                      f"({os.path.basename(path)}): figure skipped -- run "
-                      f"the stabilization program to write it.")
-                continue
-            p_res = compute_significance(p_data, p_channels, PART_COMPARISONS)
-            print_significance_table(p_res, args, PART_COMPARISONS, what="gain")
+    # Same figure once more, for the STABILIZATION alone: merged_before is the
+    # same events without the stabilization, fitted like the stabilized column.
+    if args.gain:
+        gain_res = compute_significance(data, channels, GAIN_COMPARISONS)
+        if any(gain_res.values()):
+            print_significance_table(gain_res, args, GAIN_COMPARISONS, what="gain")
             save(make_significance_figure(
-                     None, p_channels, args, p_res, PART_COMPARISONS,
-                     title=f"{label}: in-partition gain vs total gain"),
-                 (base + f"_{name}_partition_significance") if base else
-                 os.path.join(os.path.dirname(os.path.abspath(path)),
-                              f"{name}_partition_significance"))
+                     data, channels, args, gain_res, GAIN_COMPARISONS,
+                     title="Significance of the resolution change produced by "
+                           "each stabilization, from the same un-stabilized "
+                           "spectrum"),
+                 (base + "_gain_significance") if base else
+                 os.path.join(out_dir, f"thallium_gain_significance_{tag}"))
+        else:
+            print(">>> No 'merged_before' column in the table (re-run "
+                  "ThalliumStabilization.py): gain figure skipped.")
 
 
 if __name__ == "__main__":

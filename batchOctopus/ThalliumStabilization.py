@@ -1603,8 +1603,7 @@ def shared_before_after_fits(before_e, after_e, center, tag, sig_hint=None,
 
     *stats_aware*: when True (per-partition), the bin count is additionally capped
     so sparse partitions keep ~BA_TARGET_PER_BIN counts/bin (no empty-bin holes).
-    When False (combined spectrum, see combined_before_after_fits) only the
-    resolution cap applies, keeping the fine binning the narrow AFTER peak needs.
+    When False only the resolution cap applies.
     Returns (h_before, fit_before, h_after, fit_after) (fit_* may be None).
     """
     if sig_hint is not None and sig_hint > 0:
@@ -1643,22 +1642,6 @@ def shared_before_after_fits(before_e, after_e, center, tag, sig_hint=None,
         h_a, f_a = fit_thallium_peak(after_e, center, lo, hi, nb, sig_seed,
                                      f"{tag}_after", sigma_bounds=bounds)
     return h_b, f_b, h_a, f_a
-
-
-def combined_before_after_fits(before_e, after_e, center, tag, sig_hint=None):
-    """
-    Before/after fits for the COMBINED thallium peak (all partitions merged).
-
-    Dedicated variant of shared_before_after_fits with the ORIGINAL binning:
-    resolution-only (bin width ~ sigma_ref/BA_RES_BIN_DIV), WITHOUT the
-    statistics cap. The combined AFTER peak is narrow while its window is set by
-    the broad BEFORE spread; the statistics cap would then widen the bins and
-    smear the peak onto a couple of bins. Keeping the fine resolution binning
-    preserves the peak shape.
-    Returns (h_before, fit_before, h_after, fit_after) (fit_* may be None).
-    """
-    return shared_before_after_fits(before_e, after_e, center, tag,
-                                    sig_hint=sig_hint, stats_aware=False)
 
 
 def leverage_trim(bases, mad_trim=None):
@@ -1838,7 +1821,7 @@ def chain_settings(ch_id):
 # Canonical order of the chain, used for "step": it must NOT depend on the
 # column the variable ends up in, because on the OPTIMUM_FILTER_CHANNELS the
 # heater column is missing and every later variable would shift by one.
-CHAIN_STEP_ORDER = ("rough", "heater", "corrected", "stabilized")
+CHAIN_STEP_ORDER = ("rough", "heater", "corrected", "merged_before", "stabilized")
 
 RES_CSV_FIELDS = [
     "channel", "step", "variable", "label", "row", "background",
@@ -1917,8 +1900,7 @@ def _part_res_sort_key(r):
             {"nopart": 0, "before": 1}.get(str(r.get("phase", "")), 2))
 
 
-def collect_partition_resolution_rows(ch_id, part_results, merged=None,
-                                      nopart=None):
+def collect_partition_resolution_rows(ch_id, part_results):
     """
     One CSV row per (partition, phase) of the thallium line:
 
@@ -1927,18 +1909,10 @@ def collect_partition_resolution_rows(ch_id, part_results, merged=None,
                any stabilization;
       after  : the same events stabilized on the baseline.
 
-    *merged* is (h_before, fit_before, h_after, fit_after) of the SAME two spectra
-    with all partitions merged, written as partition "merged". *nopart* is the
-    same tuple for the same events rescaled on ONE global peak, i.e. with no
-    partitioning at all, written as phase "nopart" of partition "merged". The
-    three merged numbers split the total gain in two:
-
-        nopart -> before   gain of the PARTITIONING alone
-        before -> after    gain of the STABILIZATION
-
-    and all three come from the same fit recipe, so the differences mean
-    something (the chain table's "corrected" panel does not: it is fitted with
-    the chain windows and the per-channel chain settings).
+    The single partitions only. The MERGED spectra are NOT here: the
+    un-stabilized one is a column of the chain (thallium_resolutions.csv,
+    variable "merged_before") and the stabilized one is the chain's "stabilized"
+    column. Both come from the same chain recipe -- one number, one place.
     """
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1972,13 +1946,6 @@ def collect_partition_resolution_rows(ch_id, part_results, merged=None,
     for r in part_results:
         add(f"P{r.idx}", "before", r.fit_before, r.h_before, r.all_amps.size, r.blo, r.bhi)
         add(f"P{r.idx}", "after",  r.fit_after,  r.h_after,  r.all_amps.size, r.blo, r.bhi)
-    n_tot = sum(int(r.all_amps.size) for r in part_results)
-    if nopart:
-        add("merged", "nopart", nopart[1], nopart[0], n_tot, float("nan"), float("nan"))
-    if merged:
-        h_b, f_b, h_a, f_a = merged
-        add("merged", "before", f_b, h_b, n_tot, float("nan"), float("nan"))
-        add("merged", "after",  f_a, h_a, n_tot, float("nan"), float("nan"))
     return rows
 
 
@@ -2439,6 +2406,10 @@ class StabResult:
         self.view_stab       = None
         # ROOT objects (drawing)
         self.h_heat_orig          = None   # pre-cleaning spectrum + preliminary fit
+        # The SAME spectrum and the SAME axis, with only the events the cleaning
+        # window keeps: drawn under it, so what the window selects out of the
+        # partition is read off the two pads without converting anything.
+        self.h_heat_orig_clean    = None
         self.fit_prelim           = None
         self.h_heat_clean         = None   # clean peak BEFORE stabilization
         self.fit_clean            = None
@@ -2447,8 +2418,6 @@ class StabResult:
         self.fit_brange           = None   # (min,max) baseline of the points used in the line
         self.f1                   = None   # FITTED line (red, always computed)
         self.f1_ext               = None   # EXTERNAL line (blue, when applied)
-        self.h_heat_stab          = None   # peak AFTER stabilization (amplitude)
-        self.fit_stab             = None
         self.g_heat_vs_base_stab  = None   # amplitude vs baseline after stab.
         self.h_heat_cal           = None   # calibrated & stabilized peak (energy)
         self.h_heat_cal_final     = None
@@ -2491,18 +2460,6 @@ def apply_stabilization_line(res, ch_id):
     res.g_heat_vs_base_stab.SetName(f"g_heat_vs_base_stab_{tag}")
     res.g_heat_vs_base_stab.SetTitle(
         f"Ch {ch_id} P{res.idx}: Amplitude vs Baseline (after stab.);Baseline;Amplitude")
-
-    res.h_heat_stab.Reset()
-    if n_stab_fin > 0:
-        res.h_heat_stab.FillN(n_stab_fin, a_stab.astype(np.double),
-                              np.ones(n_stab_fin, np.double))
-
-    res.fit_stab = ROOT.TF1(f"fit_stab_{tag}", "gaus",
-                            res.mean_amp_clean - 5.0 * res.bin_params.robust_sigma,
-                            res.mean_amp_clean + 5.0 * res.bin_params.robust_sigma)
-    res.fit_stab.SetParameters(res.h_heat_stab.GetMaximum(),
-                               res.mean_amp_clean, res.bin_params.robust_sigma)
-    res.h_heat_stab.Fit(res.fit_stab, "Q0 R L")
 
     # --- calibrated histogram -----------------------------------------------
     params_cal = GetCenteredBinning(a_stab_cal.tolist(), TARGET_ENERGY)
@@ -2665,16 +2622,24 @@ def process_partition(amps_for_stab, bases_for_stab, ch_id, idx, blo, bhi,
     clean_bases_np = bases_for_stab[clean_mask]
     res.n_clean    = len(clean_amps_np)
 
+    # Same binning and same range as h_heat_orig (built above from the whole
+    # partition), so the two pads are directly comparable. Filled here, BEFORE the
+    # starved-partition early return, so a partition the window empties still
+    # shows what little it kept.
+    res.h_heat_orig_clean = ROOT.TH1F(
+        f"h_heat_origclean_{tag}",
+        f"Ch {ch_id} P{idx} [{blo:.3f},{bhi:.3f}]: events used for the stabilization;"
+        f"Amplitude;Counts", bins_heat, heat_min, heat_max)
+    if res.n_clean > 0:
+        res.h_heat_orig_clean.FillN(res.n_clean, clean_amps_np.astype(np.double),
+                                    np.ones(res.n_clean, np.double))
+
     params_clean = GetCenteredBinning(clean_amps_np.tolist(),
                                       heat_min + (heat_max - heat_min) / 2.0)
     res.bin_params = params_clean
     res.h_heat_clean = ROOT.TH1F(
         f"h_heat_clean_{tag}",
         f"Ch {ch_id} P{idx}: Thallium Peak BEFORE stabilization;Amplitude;Counts",
-        params_clean.bins, params_clean.vis_min, params_clean.vis_max)
-    res.h_heat_stab = ROOT.TH1F(
-        f"h_heat_stab_{tag}",
-        f"Ch {ch_id} P{idx}: Thallium Peak AFTER stabilization;Amplitude;Counts",
         params_clean.bins, params_clean.vis_min, params_clean.vis_max)
 
     # A partition whose cleaning window keeps (almost) nothing cannot be fitted:
@@ -3540,8 +3505,8 @@ def run_stabilization(
     # background, on a shared before/after axis:
     #   BEFORE : window events RESCALED to energy on the partition's own Tl peak;
     #   AFTER  : window events STABILIZED per-event (already energy, NOT rescaled).
-    # Kept for the MERGED spectra fitted below.
-    sep_raw, sep_before, sep_after, sep_sig = [], [], [], []
+    # Kept for the merged, un-stabilized spectrum fitted below.
+    sep_before = []
     for r in part_results:
         if r.all_amps.size < 1:
             continue
@@ -3577,53 +3542,15 @@ def run_stabilization(
                 f"Ch {ch_id} P{r.idx}: Thallium AFTER stab.;Energy (keV);Counts")
         if r.dropped:
             continue                      # excluded from the combined results
-        if sig_hint:
-            sep_sig.append((sig_hint, max(int(r.all_amps.size), 1)))
-        sep_raw.append(r.all_amps)
         sep_before.append(before_e)
-        if after_e is not None:
-            sep_after.append(after_e)
 
-    # MERGED spectra of the same events, on ONE shared axis:
-    #   nopart -> all the events rescaled on ONE global peak: no partitioning;
-    #   before -> every partition rescaled on its OWN peak, then merged. This is
-    #             what the partitioning ALONE gives, with no stabilization;
-    #   after  -> the stabilized events merged.
-    #   nopart -> before  = gain of splitting into partitions
-    #   before -> after   = gain of the stabilization itself
-    # Widths taken from the stabilization, never re-measured over a window where
-    # the continuum can win (see chain_peak_interval): sig_intra = population-
-    # weighted mean of the partitions' clean-peak sigma; sig_comb = that width and
-    # the spread BETWEEN partition positions in quadrature.
-    sig_intra = (sum(sv * n for sv, n in sep_sig) / sum(n for _, n in sep_sig)
-                 if sep_sig else None)
+    # Every partition rescaled on its OWN peak and then merged: the partitioning
+    # alone, with no stabilization. Fitted further down as one more COLUMN of the
+    # chain, with the settings of the stabilized column, so the number exists in
+    # exactly ONE place (thallium_resolutions.csv) and comes from the same recipe
+    # as the column it is meant to be compared against.
+    merged_before_e = np.concatenate(sep_before) if sep_before else None
     kept_results = [r for r in part_results if not r.dropped]
-    sig_comb = chain_peak_interval(kept_results)[2] * TARGET_ENERGY
-    if not (sig_comb > 0):
-        sig_comb = sig_intra
-
-    merged_ba = merged_nopart = None
-    if sep_before:
-        merged_ba = combined_before_after_fits(
-            np.concatenate(sep_before),
-            np.concatenate(sep_after) if sep_after else None,
-            TARGET_ENERGY, f"merged_{ch_id}", sig_hint=sig_intra)
-        if merged_ba[0] is not None:
-            merged_ba[0].SetTitle(
-                f"Ch {ch_id}: Thallium, partitions merged BEFORE stab.;Energy (keV);Counts")
-        if merged_ba[2] is not None:
-            merged_ba[2].SetTitle(
-                f"Ch {ch_id}: Thallium, partitions merged AFTER stab.;Energy (keV);Counts")
-        raw_all = np.concatenate(sep_raw)
-        mu_glob = hint_center if (peak_hint is not None and hint_center > 0) \
-                  else float(np.median(raw_all))
-        if mu_glob > 0:
-            merged_nopart = combined_before_after_fits(
-                TARGET_ENERGY * raw_all / mu_glob, None,
-                TARGET_ENERGY, f"nopart_{ch_id}", sig_hint=sig_comb)
-            if merged_nopart[0] is not None:
-                merged_nopart[0].SetTitle(
-                    f"Ch {ch_id}: Thallium, no partitioning;Energy (keV);Counts")
 
     # ======================================================================
     # AMPLITUDE-CHAIN COMPARISON  (combined-thallium canvas)
@@ -3741,6 +3668,34 @@ def run_stabilization(
             p["h_energy"].SetTitle(
                 f"Ch {ch_id}: {p['label']} - energy;Energy (keV);Counts")
 
+    # --- the partitioning ALONE, as one more column ---------------------------
+    # Second from the right, next to the stabilized column: the two differ by the
+    # stabilization and by NOTHING else, so this one is fitted with THAT column's
+    # settings (win_scale / bin_div / sig_scale / bins of "stabilized") instead of
+    # its own -- two spectra compared through two recipes compare the recipes. For
+    # the same reason it has no column of its own in chain_settings.csv.
+    if merged_before_e is not None and merged_before_e.size > 0:
+        _e = merged_before_e[np.isfinite(merged_before_e)]
+        h_mf = ROOT.TH1F(f"h_chain_full_{ch_id}_merged",
+                         f"Ch {ch_id}: Partitions merged (no stab.);Energy (keV);Counts",
+                         CHAIN_FULL_BINS, CHAIN_DISP_MIN, CHAIN_DISP_MAX)
+        h_mf.SetDirectory(0)
+        if _e.size > 0:
+            h_mf.FillN(_e.size, _e.astype(np.double), np.ones(_e.size, np.double))
+        _mkey = "stabilized"
+        _miv = (tl_interval[0] * cfg.win_scale(_mkey), tl_interval[1])
+        h_mz, f_mz, _, _ = fit_peak_centred(
+            _e, TARGET_ENERGY, f"h_chain_merged_{ch_id}", _miv, cfg, _mkey)
+        if h_mz is not None:
+            h_mz.SetTitle(f"Ch {ch_id}: Partitions merged (no stab.) - energy;"
+                          f"Energy (keV);Counts")
+        chain.insert(max(len(chain) - 1, 0), dict(
+            idx=len(chain), key="merged_before",
+            label="Partitions merged (no stab.)",
+            colour=ROOT.kOrange + 7, h_full=h_mf, interval=_miv,
+            h_zoom=None, fit_zoom=None, energy=None,
+            h_energy=h_mz, fit_energy=f_mz))
+
     # Counts under the stabilized thallium peak, from its Gaussian component.
     stab_panel = next((p for p in chain if p["label"] == "Thallium stabilized"), None)
     if stab_panel is not None and stab_panel["fit_energy"] is not None:
@@ -3763,8 +3718,7 @@ def run_stabilization(
 
     # --- Per-partition resolutions (before/after) + the merged spectra -------
     if SAVE_PART_RES_CSV:
-        part_rows = collect_partition_resolution_rows(ch_id, part_results,
-                                                      merged_ba, merged_nopart)
+        part_rows = collect_partition_resolution_rows(ch_id, part_results)
         if part_rows:
             write_resolution_csv(
                 os.path.join(output_dir, RES_CSV_DIR_NAME,
@@ -4033,10 +3987,11 @@ def run_stabilization(
             # (0,0) pre-cleaning spectrum + preliminary fit
             c_parts.cd(padno(0, 0)); ROOT.gPad.SetGrid()
             if r.h_heat_orig is not None:
-                r.h_heat_orig.SetLineColor(ROOT.kBlue); r.h_heat_orig.SetStats(0)
+                r.h_heat_orig.SetStats(0); r.h_heat_orig.SetLineColor(ROOT.kBlack)
+                r.h_heat_orig.SetFillColorAlpha(ROOT.kGray + 2, 0.5)
                 r.h_heat_orig.Draw()
                 if r.fit_prelim:
-                    r.fit_prelim.SetLineColor(ROOT.kRed); r.fit_prelim.SetLineWidth(2)
+                    r.fit_prelim.SetLineColor(ROOT.kBlue); r.fit_prelim.SetLineWidth(2)
                     r.fit_prelim.Draw("same")
                 # Cleaning window: the events BETWEEN these two lines are the ones
                 # the stabilization line is fitted on. Magenta and solid when it
@@ -4083,7 +4038,7 @@ def run_stabilization(
             c_parts.cd(padno(0, 1)); ROOT.gPad.SetGrid()
             if r.h_before is not None:
                 r.h_before.SetStats(0); r.h_before.SetLineColor(ROOT.kBlack)
-                r.h_before.SetFillColorAlpha(ROOT.kGray, 0.5); r.h_before.Draw()
+                r.h_before.SetFillColorAlpha(ROOT.kGray + 2, 0.5); r.h_before.Draw()
                 if r.fit_before:
                     r.fit_before.SetLineColor(ROOT.kBlue); r.fit_before.SetLineWidth(2)
                     r.fit_before.Draw("same")
@@ -4094,7 +4049,7 @@ def run_stabilization(
             c_parts.cd(padno(0, 2)); ROOT.gPad.SetGrid()
             if r.g_heat_vs_base_clean is not None:
                 gc = r.g_heat_vs_base_clean
-                gc.SetMarkerStyle(20); gc.SetMarkerSize(0.5); gc.SetMarkerColor(ROOT.kMagenta)
+                gc.SetMarkerStyle(20); gc.SetMarkerSize(0.5); gc.SetMarkerColor(ROOT.kBlack)
                 if r.view_clean is not None:
                     x0, x1, y0, y1 = r.view_clean
                     gc.GetXaxis().SetLimits(x0, x1)
@@ -4139,9 +4094,25 @@ def run_stabilization(
                                          x1=0.14, y1=0.58, x2=0.62, y2=0.72)
                     ebox.Draw(); global_lines.append(ebox)
 
-            # (1,0) thallium peak AFTER stabilization (stabilized, NOT rescaled) +
-            #       gaus+pol0 fit over ALL window events, on the shared axis.
+            # (1,0) the pad above, with ONLY the events the cleaning window keeps:
+            #       same axis, so the selection is read off the two directly.
             c_parts.cd(padno(1, 0)); ROOT.gPad.SetGrid()
+            if r.h_heat_orig_clean is not None:
+                r.h_heat_orig_clean.SetStats(0)
+                r.h_heat_orig_clean.SetLineColor(ROOT.kBlack)
+                r.h_heat_orig_clean.SetFillColorAlpha(ROOT.kGray + 2, 0.5)
+                r.h_heat_orig_clean.Draw()
+                _sel = ROOT.TPaveText(0.13, 0.80, 0.62, 0.88, "NDC")
+                _sel.SetFillColor(ROOT.kWhite); _sel.SetBorderSize(1)
+                _sel.SetTextAlign(12); _sel.SetTextFont(62); _sel.SetTextSize(0.033)
+                _t = _sel.AddText(f"{r.n_clean} eventi nella stabilizzazione "
+                                  f"su {r.n_events}")
+                _t.SetTextColor(ROOT.kGray + 3)
+                _sel.Draw(); global_lines.append(_sel)
+
+            # (1,1) thallium peak AFTER stabilization (stabilized, NOT rescaled) +
+            #       gaus+pol0 fit over ALL window events, on the shared axis.
+            c_parts.cd(padno(1, 1)); ROOT.gPad.SetGrid()
             if r.h_after is not None:
                 r.h_after.SetStats(0); r.h_after.SetLineColor(ROOT.kBlack)
                 r.h_after.SetFillColorAlpha(ROOT.kRed + 1, 0.5); r.h_after.Draw()
@@ -4152,22 +4123,11 @@ def run_stabilization(
                                    note=calib_note)
                 box.Draw(); global_lines.append(box)
 
-            # (1,1) stabilized peak (amplitude) + fit + box
-            c_parts.cd(padno(1, 1)); ROOT.gPad.SetGrid()
-            if r.h_heat_stab is not None and r.h_heat_stab.GetEntries() > 0:
-                r.h_heat_stab.SetStats(0); r.h_heat_stab.SetLineColor(ROOT.kGreen + 2)
-                r.h_heat_stab.Draw()
-                if r.fit_stab:
-                    r.fit_stab.SetLineColor(ROOT.kRed); r.fit_stab.SetLineWidth(2); r.fit_stab.Draw("same")
-                box = CreateFitBox(r.fit_stab, f"P{r.idx} STABILIZED", ROOT.kGreen + 2,
-                                   note=calib_note)
-                box.Draw(); global_lines.append(box)
-
             # (1,2) amplitude vs baseline AFTER stabilization (de-zoomed)
             c_parts.cd(padno(1, 2)); ROOT.gPad.SetGrid()
             if r.g_heat_vs_base_stab is not None:
                 gs = r.g_heat_vs_base_stab
-                gs.SetMarkerStyle(20); gs.SetMarkerSize(0.5); gs.SetMarkerColor(ROOT.kGreen + 2)
+                gs.SetMarkerStyle(20); gs.SetMarkerSize(0.5); gs.SetMarkerColor(ROOT.kRed + 1)
                 if r.view_stab is not None:
                     x0, x1, y0, y1 = r.view_stab
                     gs.GetXaxis().SetLimits(x0, x1)
@@ -4189,14 +4149,24 @@ def run_stabilization(
         n_col = len(chain)
 
         def build_chain_canvas():
-            """Draw the 3 x n_col chain canvas."""
+            """
+            Draw the 2 x n_col chain canvas: the full spectrum of every amplitude,
+            and the same peak rescaled to energy with its fit. The native-units
+            zoom used to sit between the two; it showed the same fit as the energy
+            row on a scale that changes from column to column, so it added a row
+            without adding anything to compare.
+            """
             c = ROOT.TCanvas(f"c_comb_{ch_id}",
                              f"Combined Thallium Peak Ch {ch_id}",
-                             600 * n_col, 1350)
-            c.Divide(n_col, 3)
+                             600 * n_col, 900)
+            # Tight inter-pad gap: the columns are meant to be read against each
+            # other, and the default 1 % margin plus each pad's own 10 % right
+            # margin put a finger's width of white between neighbouring spectra.
+            c.Divide(n_col, 2, 0.002, 0.008)
 
             def draw(pad, h, fit, header, colour):
                 c.cd(pad); ROOT.gPad.SetGrid()
+                ROOT.gPad.SetLeftMargin(0.09); ROOT.gPad.SetRightMargin(0.015)
                 if h is None:
                     return
                 h.SetStats(0); h.SetLineColor(ROOT.kBlack)
@@ -4211,9 +4181,8 @@ def run_stabilization(
                 box.Draw(); global_lines.append(box)
 
             for col, p in enumerate(chain):
-                draw(col + 1,             p["h_full"],   None,           p["label"], p["colour"])
-                draw(n_col + col + 1,     p["h_zoom"],   p["fit_zoom"],  p["label"], p["colour"])
-                draw(2 * n_col + col + 1, p["h_energy"], p["fit_energy"],
+                draw(col + 1,         p["h_full"],   None,            p["label"], p["colour"])
+                draw(n_col + col + 1, p["h_energy"], p["fit_energy"],
                      f"{p['label']} (energy)", p["colour"])
 
             c.Update()
